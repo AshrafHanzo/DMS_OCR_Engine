@@ -17,7 +17,7 @@ Usage:
     python aligned_pipeline.py <image-or-pdf> [--model NAME] [--no-ocr]
 Requires: an Ollama server with a vision OCR model pulled.
 """
-import argparse, base64, json, os, re, sys, time, urllib.request
+import argparse, base64, json, os, re, sys, threading, time, urllib.request
 import cv2, numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
@@ -496,6 +496,11 @@ def te_to_kn(s):
 
 _CACHE_PATH = None
 _CACHE = {}
+# Recognition runs across OCR_WORKERS threads, so every touch of _CACHE is guarded.
+# Without this, concurrent uploads dropped each other's entries and json.dump could
+# raise "dictionary changed size during iteration" mid-write.
+_CACHE_LOCK = threading.Lock()
+_CACHE_LOADED = False
 
 
 def cache_init(outdir):
@@ -504,26 +509,47 @@ def cache_init(outdir):
     The cache is SHARED across jobs (keyed by crop bytes), not per job dir -
     otherwise every upload starts cold and re-pays the full recognition cost.
     Override the location with OCR_CACHE_DIR.
+
+    Loads ONCE per process. It used to rebind the global _CACHE on every request
+    while another request's worker threads were still writing to it, so two
+    concurrent uploads discarded each other's entries.
     """
-    global _CACHE_PATH, _CACHE
-    shared = os.environ.get("OCR_CACHE_DIR") or os.path.join(HERE_DIR, "ocr_workspace")
-    try:
-        os.makedirs(shared, exist_ok=True)
-        _CACHE_PATH = os.path.join(shared, ".ocr_cache.json")
-    except Exception:
-        _CACHE_PATH = os.path.join(outdir, ".ocr_cache.json")
-    if os.path.exists(_CACHE_PATH):
+    global _CACHE_PATH, _CACHE, _CACHE_LOADED
+    with _CACHE_LOCK:
+        if _CACHE_LOADED:
+            return
+        shared = os.environ.get("OCR_CACHE_DIR") or os.path.join(HERE_DIR, "ocr_workspace")
         try:
-            _CACHE = json.load(open(_CACHE_PATH, encoding="utf-8"))
-            print(f"ocr cache: {len(_CACHE)} entries")
+            os.makedirs(shared, exist_ok=True)
+            _CACHE_PATH = os.path.join(shared, ".ocr_cache.json")
         except Exception:
-            _CACHE = {}
+            _CACHE_PATH = os.path.join(outdir, ".ocr_cache.json")
+        if os.path.exists(_CACHE_PATH):
+            try:
+                with open(_CACHE_PATH, encoding="utf-8") as f:
+                    _CACHE = json.load(f)
+                print(f"ocr cache: {len(_CACHE)} entries")
+            except Exception:
+                _CACHE = {}
+        _CACHE_LOADED = True
 
 
 def cache_save():
-    if _CACHE_PATH:
-        with open(_CACHE_PATH, "w", encoding="utf-8") as f:
-            json.dump(_CACHE, f, ensure_ascii=False)
+    """
+    Snapshot under the lock, then write to a temp file and rename.
+
+    Serialising _CACHE directly while worker threads were still inserting raised
+    "dictionary changed size during iteration", and writing in place left a
+    truncated cache file if the process died mid-write.
+    """
+    if not _CACHE_PATH:
+        return
+    with _CACHE_LOCK:
+        snapshot = dict(_CACHE)
+    tmp = _CACHE_PATH + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(snapshot, f, ensure_ascii=False)
+    os.replace(tmp, _CACHE_PATH)   # atomic
 
 
 def recognise(crop, model):
@@ -531,8 +557,9 @@ def recognise(crop, model):
     ok, buf = cv2.imencode(".png", crop)
     raw_bytes = buf.tobytes()
     key = hashlib.sha1(raw_bytes + model.encode()).hexdigest()
-    if key in _CACHE:
-        return _CACHE[key]
+    with _CACHE_LOCK:
+        if key in _CACHE:
+            return _CACHE[key]
     body = json.dumps({"model": model, "prompt": PROMPT,
                        "images": [base64.b64encode(raw_bytes).decode()],
                        "stream": False,
@@ -541,7 +568,8 @@ def recognise(crop, model):
                                 headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=600) as r:
         out = json.loads(r.read()).get("response", "").strip()
-    _CACHE[key] = out
+    with _CACHE_LOCK:
+        _CACHE[key] = out
     return out
 
 

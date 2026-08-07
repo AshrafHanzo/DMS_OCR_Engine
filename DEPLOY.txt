@@ -1,0 +1,903 @@
+================================================================================
+ DMS / doc_engine1  -  OCR ENGINE DEPLOYMENT GUIDE (GPU SERVER)
+================================================================================
+ Goal : run the OCR backend + HTML frontend on a Linux GPU server, reachable
+        over an API, producing output IDENTICAL to the local Windows machine.
+
+ Written : 2026-08-07
+ Source of truth : versions below were read from the LOCAL venv
+                   (ocr/venv/Lib/site-packages), not from requirements.txt.
+================================================================================
+
+
+================================================================================
+ 0. WHAT YOU ARE DEPLOYING
+================================================================================
+
+Three moving parts:
+
+  1. FastAPI backend            ocr/main.py                 port 8000
+  2. Static HTML frontend       ocr/index.html + app.js     port 8080 (to merge)
+  3. Ollama + vision model      AuditAid/PaddleOCR-VL-1.6-0.9B   port 11434
+
+Pipeline (the "aligned" engine, ocr/aligned_pipeline.py):
+  load page -> detect page region -> deskew -> detect text line boxes
+  -> recognise each line via PaddleOCR-VL over Ollama HTTP
+  -> Telugu->Kannada codepoint shift (+0x80)
+  -> inpaint original text away -> redraw recognised text at same position
+  -> emit clean_bg.png, overlay.png, aligned.docx, lines.json
+
+The legacy engine (Tesseract via ocrmypdf) still exists at engine="legacy".
+The searchable-PDF download (/download/{job_id}) ALWAYS uses ocrmypdf+Tesseract,
+so Tesseract is required even if you only ever use the aligned engine.
+
+NOTE: There is NO PaddlePaddle / paddleocr / torch dependency. The model is
+reached purely over HTTP to Ollama. "Paddle" is only the model's lineage.
+
+
+================================================================================
+ 1. SERVER PREREQUISITES
+================================================================================
+
+  OS          Ubuntu 22.04 or 24.04 LTS
+  Python      3.12.x   (local venv is 3.12.10 - match the minor version)
+  GPU         Any CUDA GPU. The model is only 0.9B params (~1 GB VRAM),
+              so even a T4 / 8 GB card is plenty. GPU is for speed, not size.
+  Disk        20 GB+ . Each OCR job writes input + preprocessed + pdf + docx
+              into ocr/ocr_workspace/<job_id>/ and NOTHING deletes them.
+  RAM         8 GB+
+  Driver      NVIDIA driver + CUDA runtime installed and `nvidia-smi` working
+              BEFORE installing Ollama, or Ollama silently falls back to CPU.
+
+
+================================================================================
+ 2. *** CRITICAL *** requirements.txt IS OUT OF DATE
+================================================================================
+
+If you run `pip install -r ocr/requirements.txt` on the server you will get a
+DIFFERENT stack than your local machine. Compared below:
+
+  package          requirements.txt says   LOCAL ACTUALLY HAS
+  ---------------------------------------------------------------
+  fastapi          0.104.1                 0.136.0     <-- differs
+  uvicorn          0.24.0                  0.45.0      <-- differs
+  ocrmypdf         16.13.0                 17.4.2      <-- differs (major!)
+  pytesseract      0.3.10                  0.3.13      <-- differs
+  Pillow           >=10.0.0                12.2.0      <-- unpinned = drifts
+  python-docx      >=1.0.0                 1.2.0       <-- unpinned = drifts
+  PyMuPDF          (NOT LISTED AT ALL)     1.28.0      <-- MISSING, breaks PDF
+  opencv-python    4.8.0.76                4.8.0.76    ok
+  numpy            <2                      1.26.4      ok
+
+Pillow version matters directly for alignment (it does the text measuring).
+PyMuPDF is imported at aligned_pipeline.py:40 (`import fitz`) for PDF input;
+without it, uploading a PDF returns a 500.
+
+USE THIS EXACT LIST ON THE SERVER. Save as ocr/requirements-server.txt:
+
+--------------------------- copy from here ---------------------------
+fastapi==0.136.0
+uvicorn==0.45.0
+ocrmypdf==17.4.2
+pytesseract==0.3.13
+opencv-python-headless==4.8.0.76
+numpy==1.26.4
+Pillow==12.2.0
+python-docx==1.2.0
+PyMuPDF==1.28.0
+---------------------------- to here --------------------------------
+
+Why opencv-python-headless instead of opencv-python:
+  I checked - the code never calls cv2.imshow / waitKey / namedWindow.
+  Headless avoids needing libGL on the server and is the correct server build.
+  Same version number, same algorithms, identical numeric output.
+
+
+================================================================================
+ 3. SYSTEM PACKAGES (apt)
+================================================================================
+
+--- 3a. NVIDIA driver FIRST (before Ollama) ---------------------------------
+Check whether you already have one (cloud GPU images usually do):
+    nvidia-smi
+
+If that fails:
+    sudo apt-get update
+    sudo apt-get install -y ubuntu-drivers-common
+    sudo ubuntu-drivers install
+    sudo reboot
+    # after reboot:
+    nvidia-smi        # must list your GPU before you continue
+
+
+--- 3b. Python 3.12 -----------------------------------------------------------
+Check what you have:
+    lsb_release -rs        # 24.04 or 22.04 ?
+    python3 --version
+
+Ubuntu 24.04  -> ships Python 3.12 already:
+    sudo apt-get install -y python3 python3-venv python3-dev
+    # use "python3" (not "python3.12") in section 4
+
+Ubuntu 22.04  -> ships Python 3.10 ONLY. `apt install python3.12` WILL FAIL.
+                 Add the deadsnakes PPA first:
+    sudo apt-get install -y software-properties-common
+    sudo add-apt-repository -y ppa:deadsnakes/ppa
+    sudo apt-get update
+    sudo apt-get install -y python3.12 python3.12-venv python3.12-dev
+
+
+--- 3c. Everything else ------------------------------------------------------
+sudo apt-get update
+sudo apt-get install -y \
+    tesseract-ocr tesseract-ocr-kan tesseract-ocr-eng \
+    ghostscript \
+    libglib2.0-0 \
+    libraqm0 \
+    fonts-noto-kannada \
+    git curl unzip
+
+Verify Tesseract has Kannada:
+    tesseract --list-langs        # must show: eng  kan
+
+Optional (only if you ever set clean=True / optimize>0 in ocrmypdf):
+    sudo apt-get install -y unpaper pngquant
+  jbig2 is not packaged on Ubuntu; main.py already sets optimize=0 so skip it.
+
+DO NOT use ocr/gs_installer.exe - it is a Windows Ghostscript installer and is
+useless on Linux. Use the apt `ghostscript` package.
+
+
+================================================================================
+ 4. PYTHON ENVIRONMENT
+================================================================================
+
+sudo mkdir -p /opt && cd /opt
+sudo chown $USER:$USER /opt
+git clone <your-repo-url> dms_engine        # see section 13 FIRST
+cd /opt/dms_engine/doc_engine1/ocr
+
+python3.12 -m venv venv          # or: python3 -m venv venv   on 24.04
+source venv/bin/activate
+pip install --upgrade pip
+
+Create the pinned server requirements file (paste this whole block):
+
+cat > requirements-server.txt <<'EOF'
+fastapi==0.136.0
+uvicorn==0.45.0
+ocrmypdf==17.4.2
+pytesseract==0.3.13
+opencv-python-headless==4.8.0.76
+numpy==1.26.4
+Pillow==12.2.0
+python-docx==1.2.0
+PyMuPDF==1.28.0
+EOF
+
+pip install --no-cache-dir -r requirements-server.txt
+
+Sanity check (all three must succeed):
+    python -c "import cv2, numpy, fitz, docx, PIL; print('imports ok')"
+    python -c "from PIL import features; print('raqm:', features.check('raqm'))"
+    python -c "import PIL; print('pillow:', PIL.__version__)"
+
+*** raqm MUST print True ***
+libraqm is what shapes complex Indic scripts. Without it Pillow uses basic
+layout, and Kannada conjuncts + matras render WRONG - your overlay and DOCX
+font sizes will not match local even with the correct font file.
+If it prints False, in this order:
+    1. sudo apt-get install -y libraqm0
+       pip install --force-reinstall --no-cache-dir Pillow==12.2.0
+       python -c "from PIL import features; print(features.check('raqm'))"
+
+    2. Still False? Confirm you are on a manylinux wheel, not a source build:
+       pip download --no-deps -d /tmp/pw Pillow==12.2.0 && ls /tmp/pw
+       # a *.whl means the bundled libraqm should be present; a *.tar.gz means
+       # pip compiled from source and you are missing build deps:
+       sudo apt-get install -y libjpeg-dev zlib1g-dev libfreetype6-dev \
+                               libraqm-dev libimagequant-dev
+       pip install --force-reinstall --no-cache-dir Pillow==12.2.0
+
+    3. Confirm the full feature set while debugging:
+       python -c "from PIL import features; features.pilinfo()"
+
+
+================================================================================
+ 5. OLLAMA + GPU (the recognition model)
+================================================================================
+
+Install:
+    curl -fsSL https://ollama.com/install.sh | sh
+
+Pull the exact model the code defaults to (aligned_pipeline.py:25):
+    ollama pull AuditAid/PaddleOCR-VL-1.6-0.9B
+
+Confirm it is on the GPU, not CPU:
+    ollama run AuditAid/PaddleOCR-VL-1.6-0.9B "hi"    # warm it up
+    ollama ps
+    # The PROCESSOR column must say 100% GPU. If it says CPU, fix your
+    # NVIDIA driver first - CPU inference is ~20x slower here.
+
+Tune the Ollama service. Edit with `sudo systemctl edit ollama.service`:
+
+    [Service]
+    Environment="OLLAMA_KEEP_ALIVE=-1"
+    Environment="OLLAMA_NUM_PARALLEL=4"
+    Environment="OLLAMA_HOST=127.0.0.1:11434"
+
+  OLLAMA_KEEP_ALIVE=-1   keeps the model resident. Default unloads after 5 min,
+                         so the first request after idle pays a reload.
+  OLLAMA_NUM_PARALLEL=4  without this Ollama serialises requests and the
+                         backend's OCR_WORKERS=3 buys you nothing.
+  OLLAMA_HOST 127.0.0.1  keep Ollama private; only the backend should reach it.
+
+Then:
+    sudo systemctl daemon-reload && sudo systemctl restart ollama
+
+DETERMINISM NOTE:
+  The code already sends temperature=0 and num_predict=512
+  (aligned_pipeline.py:539), so sampling is greedy. But GPU kernels can still
+  produce slightly different tokens than your local CPU run. Because font size
+  is fitted TO THE RECOGNISED STRING, a different string can shift font_px.
+  To reproduce your local results exactly on known pages, copy the cache:
+      scp ocr/ocr_workspace/.ocr_cache.json server:/opt/dms_engine/doc_engine1/ocr/ocr_workspace/
+  The cache is keyed on crop-bytes + model-name, so it transfers cleanly.
+
+
+================================================================================
+ 6. *** FONTS - THIS IS WHAT BREAKS "SAME AS LOCAL" ***
+================================================================================
+
+THE PROBLEM
+-----------
+aligned_pipeline.py:30 lists font candidates in priority order:
+
+    FONT_CANDIDATES = [
+        r"C:\Windows\Fonts\Nirmala.ttc",                    <- you get this locally
+        "/usr/share/fonts/truetype/noto/NotoSansKannada-Regular.ttf",  <- server
+        "/usr/share/fonts/truetype/lohit-kannada/Lohit-Kannada.ttf",
+    ]
+
+pick_font() returns the FIRST path that exists. Nirmala.ttc does not exist on
+Linux, so the server loads a DIFFERENT font than your PC.
+
+That changes your output, because font size is MEASURED, not assumed:
+  assign_font_sizes() shrinks the size until dr.textbbox() fits the detected
+  box (aligned_pipeline.py:936-973). Different font file
+    -> different glyph advance widths
+    -> different chosen font_px
+    -> different overlay.png AND different w:sz in the .docx
+
+Bold also breaks silently: Fitter.font() hardcodes
+  C:\Windows\Fonts\NirmalaB.ttf (aligned_pipeline.py:869), which is absent on
+  Linux, so every bold line falls back to regular weight.
+
+And write_docx() hardcodes the font NAME "Nirmala UI"
+  (aligned_pipeline.py:1167) regardless of which file was actually measured.
+
+WARNING: ocr/NotoSansKannada.zip in this repo IS NOT A ZIP FILE.
+  I checked the magic bytes - it starts with "<!doctype html>". It is a saved
+  error page from a failed download. Do not try to use it.
+
+THE FIX - vendor the font so both machines load the SAME FILE
+-------------------------------------------------------------
+Step 1. Make the folder and copy the fonts from your Windows PC.
+
+  On Windows (cmd, from doc_engine1\):
+    mkdir ocr\fonts
+    copy C:\Windows\Fonts\Nirmala.ttc   ocr\fonts\
+    copy C:\Windows\Fonts\NirmalaB.ttf  ocr\fonts\
+
+  Get them onto the server - EITHER commit them (preferred, they then ship
+  with every deploy):
+    git add -f ocr/fonts/Nirmala.ttc ocr/fonts/NirmalaB.ttf
+    git commit -m "vendor Kannada fonts so all hosts measure text identically"
+    #  -f is needed because section 13's .gitignore excludes *.zip/*.exe and
+    #  you may have broadened it; fonts must NOT stay ignored.
+
+  OR copy them up directly (from Windows PowerShell / Git Bash):
+    scp ocr/fonts/Nirmala.ttc ocr/fonts/NirmalaB.ttf \
+        user@server:/opt/dms_engine/doc_engine1/ocr/fonts/
+
+  On the server, verify they landed and are readable by the service user:
+    ls -l /opt/dms_engine/doc_engine1/ocr/fonts/
+    sudo chown -R www-data:www-data /opt/dms_engine/doc_engine1/ocr/fonts
+
+Step 2. Edit ocr/aligned_pipeline.py, replace lines 29-34 with:
+
+    FONT_DIR = os.environ.get("OCR_FONT_DIR", os.path.join(HERE_DIR, "fonts"))
+
+    # Vendored fonts FIRST: text metrics - and therefore font_px and the DOCX
+    # w:sz - depend on the exact file, so every host must load the same one or
+    # output drifts between machines.
+    FONT_CANDIDATES = [
+        os.path.join(FONT_DIR, "Nirmala.ttc"),
+        r"C:\Windows\Fonts\Nirmala.ttc",
+        os.path.join(FONT_DIR, "NotoSansKannada-Regular.ttf"),
+        "/usr/share/fonts/truetype/noto/NotoSansKannada-Regular.ttf",
+        "/usr/share/fonts/truetype/lohit-kannada/Lohit-Kannada.ttf",
+    ]
+    BOLD_CANDIDATES = [
+        os.path.join(FONT_DIR, "NirmalaB.ttf"),
+        r"C:\Windows\Fonts\NirmalaB.ttf",
+        os.path.join(FONT_DIR, "NotoSansKannada-Bold.ttf"),
+    ]
+
+Step 3. In Fitter.font() (around line 869), replace the hardcoded Windows
+        tuple with the list above:
+
+    if bold:
+        for cand in BOLD_CANDIDATES + [self.path]:
+            if os.path.exists(cand):
+                for idx in (1, 0):
+                    try:
+                        loaded = ImageFont.truetype(cand, px_i, index=idx)
+                        break
+                    except Exception:
+                        continue
+            if loaded:
+                break
+
+Step 4. Make the DOCX name the font you actually measured with. Near line 1167:
+
+    DOCX_KN_FONT = os.environ.get("OCR_DOCX_FONT", "Nirmala UI")
+    ...
+    name = DOCX_KN_FONT if kn else "Arial"
+
+LICENSING - READ THIS
+---------------------
+Nirmala UI is a Microsoft font bundled with Windows. Copying it to a Linux
+server is a licensing question you need to confirm for your situation.
+Two clean choices:
+
+  OPTION A (output stays byte-identical to your current local output):
+      copy Nirmala.ttc + NirmalaB.ttf into ocr/fonts/ as above.
+      Keep OCR_DOCX_FONT="Nirmala UI".
+      Your Windows Word users already have the font, so the .docx renders right.
+
+  OPTION B (licence-clean, reproducible anywhere):
+      Download Noto Sans Kannada (SIL Open Font License) from
+        https://fonts.google.com/noto/specimen/Noto+Sans+Kannada
+      Put NotoSansKannada-Regular.ttf + -Bold.ttf into ocr/fonts/
+      Put them FIRST in FONT_CANDIDATES and set OCR_DOCX_FONT="Noto Sans Kannada"
+      USE THE SAME FILES LOCALLY TOO.
+      Your output shifts once (different metrics), then local == server forever.
+      Caveat: Word users need the font installed or Word substitutes it.
+
+Either way the rule is the same:
+  >>> ONE font file, used on BOTH machines. <<<
+
+
+================================================================================
+ 7. CODE CHANGES REQUIRED
+================================================================================
+
+--- 7a. FIX THE CRASH  (ocr/main.py line 504) --------------------------------
+normalise() returns 6 values; this unpacks 4. Every "edit text then download
+DOCX" request returns a 500 right now.
+
+  BEFORE:  rot, ink, _, _ = normalise(img)
+  AFTER:   rot, ink, _, _, _, _ = normalise(img)
+
+
+--- 7b. SERVE THE HTML FROM FASTAPI (one port, no CORS) ----------------------
+Right now app.js has a hardcoded 'http://localhost:8000'. That only works if
+the browser is on the SAME machine as the API - a remote user's browser
+resolves localhost to their own PC and gets connection refused.
+
+In ocr/main.py, AFTER all @app route definitions (must be last, or the mount
+shadows your API routes), add:
+
+    from fastapi.staticfiles import StaticFiles
+    app.mount("/", StaticFiles(
+        directory=os.path.dirname(os.path.abspath(__file__)),
+        html=True), name="ui")
+
+In ocr/app.js line 13:
+    BEFORE:  apiBaseUrl: 'http://localhost:8000',
+    AFTER:   apiBaseUrl: '',        // same origin
+
+Result: everything on port 8000. ocr/serve_frontend.py is no longer needed
+(it was a dev-only stdlib server anyway).
+
+
+--- 7c. LOCK DOWN CORS  (ocr/main.py line 39-45) -----------------------------
+Currently allow_origins=["*"] WITH allow_credentials=True - an invalid
+combination that browsers reject, and wide open. After 7b you barely need CORS:
+
+    _origins = [o for o in os.environ.get("CORS_ORIGINS", "").split(",") if o]
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_origins,       # empty = same-origin only
+        allow_credentials=False,
+        allow_methods=["GET", "POST"],
+        allow_headers=["*"],
+    )
+
+
+--- 7d. DO NOT BLOCK THE EVENT LOOP  (ocr/main.py) ---------------------------
+process_page and run_ocrmypdf are heavy blocking calls (ocrmypdf alone is
+~140s) sitting inside `async def`. One upload freezes EVERY other client.
+This is survivable locally with one user; it is not on a shared server.
+
+At the top of main.py:
+    from starlette.concurrency import run_in_threadpool
+
+In /extract (line ~392) and /formatted (line ~527):
+    BEFORE:  r = process_page(input_path, job_dir, want_docx=True)
+    AFTER:   r = await run_in_threadpool(process_page, input_path, job_dir,
+                                        want_docx=True)
+
+In /download (line ~564) and /extract/raw (line ~356):
+    BEFORE:  run_ocrmypdf(src, job_id)
+    AFTER:   await run_in_threadpool(run_ocrmypdf, src, job_id)
+
+
+--- 7e. MAKE THE OCR CACHE THREAD-SAFE  (ocr/aligned_pipeline.py) ------------
+cache_init() rebinds the global _CACHE on EVERY request (line 517) while
+another request's worker threads are writing to it (line 544, no lock), and
+cache_save() rewrites the whole file. Two concurrent uploads lose each other's
+entries, and json.dump can raise
+"RuntimeError: dictionary changed size during iteration".
+
+Add near the top:
+    import threading
+    _CACHE_LOCK = threading.Lock()
+    _CACHE_LOADED = False
+
+cache_init - load once, not per request:
+    def cache_init(outdir):
+        global _CACHE_PATH, _CACHE, _CACHE_LOADED
+        with _CACHE_LOCK:
+            if _CACHE_LOADED:
+                return
+            shared = os.environ.get("OCR_CACHE_DIR") or os.path.join(HERE_DIR, "ocr_workspace")
+            try:
+                os.makedirs(shared, exist_ok=True)
+                _CACHE_PATH = os.path.join(shared, ".ocr_cache.json")
+            except Exception:
+                _CACHE_PATH = os.path.join(outdir, ".ocr_cache.json")
+            if os.path.exists(_CACHE_PATH):
+                try:
+                    with open(_CACHE_PATH, encoding="utf-8") as f:
+                        _CACHE = json.load(f)
+                    print(f"ocr cache: {len(_CACHE)} entries")
+                except Exception:
+                    _CACHE = {}
+            _CACHE_LOADED = True
+
+cache_save - snapshot under lock, write atomically:
+    def cache_save():
+        if not _CACHE_PATH:
+            return
+        with _CACHE_LOCK:
+            snap = dict(_CACHE)
+        tmp = _CACHE_PATH + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(snap, f, ensure_ascii=False)
+        os.replace(tmp, _CACHE_PATH)
+
+recognise() - guard both read and write:
+        with _CACHE_LOCK:
+            if key in _CACHE:
+                return _CACHE[key]
+        ... existing HTTP call ...
+        with _CACHE_LOCK:
+            _CACHE[key] = out
+        return out
+
+
+--- 7f. ADD A /health ENDPOINT (this is how you PROVE server == local) -------
+Add to ocr/main.py:
+
+    @app.get("/health")
+    def health():
+        import shutil, urllib.request, PIL
+        from PIL import features
+        from aligned_pipeline import pick_font, OLLAMA, DEFAULT_MODEL
+        try:
+            urllib.request.urlopen(f"{OLLAMA}/api/tags", timeout=3)
+            ollama_up = True
+        except Exception:
+            ollama_up = False
+        return {
+            "font_file":  pick_font(),
+            "raqm":       features.check("raqm"),
+            "pillow":     PIL.__version__,
+            "ollama_url": OLLAMA,
+            "ollama_up":  ollama_up,
+            "model":      DEFAULT_MODEL,
+            "tesseract":  bool(shutil.which("tesseract")),
+            "ghostscript": bool(shutil.which("gs")),
+        }
+
+Run it on BOTH machines and diff the JSON.
+  font_file and raqm and pillow MUST match, or alignment will differ.
+
+
+--- 7g. OPTIONAL BUT RECOMMENDED: API KEY -----------------------------------
+An open OCR endpoint on a rented GPU is a free compute faucet for strangers.
+
+    from fastapi import Header, Depends
+    API_KEY = os.environ.get("OCR_API_KEY")
+
+    def require_key(x_api_key: str = Header(None)):
+        if API_KEY and x_api_key != API_KEY:
+            raise HTTPException(401, "bad or missing X-API-Key")
+
+    # then add to each route:  @app.post("/extract", dependencies=[Depends(require_key)])
+
+
+--- 7h. per-job error log  (ocr/main.py line 337) ---------------------------
+Currently writes "error_log.txt" into the process CWD and overwrites it on
+every failure. On a server the CWD may be read-only or shared:
+    BEFORE:  with open("error_log.txt", "w") as f:
+    AFTER:   with open(os.path.join(WORK_DIR, "error_log.txt"), "a") as f:
+
+
+================================================================================
+ 8. ENVIRONMENT VARIABLES
+================================================================================
+
+Already supported by the code (no change needed):
+
+  OLLAMA_URL       default http://localhost:11434
+                   aligned_pipeline.py:24 - where the vision model lives
+  OCR_WORKERS      default 3
+                   aligned_pipeline.py:697 - parallel recognition calls.
+                   Keep <= OLLAMA_NUM_PARALLEL or requests just queue.
+  OCR_CACHE_DIR    default ocr/ocr_workspace
+                   aligned_pipeline.py:509 - point at a PERSISTENT volume so
+                   the recognition cache survives redeploys.
+  OCR_TABLES       default 1 ("0" disables ruled-table cell splitting)
+                   aligned_pipeline.py:114
+
+Added by the changes in section 6/7:
+
+  OCR_FONT_DIR     default ocr/fonts
+  OCR_DOCX_FONT    default "Nirmala UI"
+  CORS_ORIGINS     comma separated, empty = same-origin only
+  OCR_API_KEY      if set, X-API-Key header is required
+
+Example /opt/dms_engine/doc_engine1/ocr/.env :
+  OLLAMA_URL=http://127.0.0.1:11434
+  OCR_WORKERS=4
+  OCR_CACHE_DIR=/var/lib/dms_engine/cache
+  OCR_FONT_DIR=/opt/dms_engine/doc_engine1/ocr/fonts
+  OCR_DOCX_FONT=Nirmala UI
+  OCR_API_KEY=<generate a long random string>
+
+
+================================================================================
+ 9. RUNNING IT
+================================================================================
+
+Manual smoke test first:
+    cd /opt/dms_engine/doc_engine1/ocr
+    source venv/bin/activate
+    uvicorn main:app --host 0.0.0.0 --port 8000 --workers 1 \
+            --timeout-keep-alive 65
+
+*** USE --workers 1 ***
+The recognition cache is in-process memory. Multiple uvicorn workers each get
+their own copy and fight over the same .ocr_cache.json file. Scale with
+threads (section 7d) instead, or finish 7e before raising worker count.
+
+Then from your laptop:
+    curl http://<server-ip>:8000/health
+    curl -F "image=@page.jpg" http://<server-ip>:8000/extract
+    # UI in a browser:
+    http://<server-ip>:8000/
+
+
+================================================================================
+ 10. systemd UNIT  (so it survives reboot)
+================================================================================
+
+/etc/systemd/system/dms-ocr.service :
+
+    [Unit]
+    Description=DMS OCR API
+    After=network-online.target ollama.service
+    Wants=ollama.service
+
+    [Service]
+    Type=simple
+    User=www-data
+    WorkingDirectory=/opt/dms_engine/doc_engine1/ocr
+    EnvironmentFile=/opt/dms_engine/doc_engine1/ocr/.env
+    ExecStart=/opt/dms_engine/doc_engine1/ocr/venv/bin/uvicorn main:app \
+              --host 127.0.0.1 --port 8000 --workers 1 --timeout-keep-alive 65
+    Restart=always
+    RestartSec=5
+
+    [Install]
+    WantedBy=multi-user.target
+
+    sudo mkdir -p /var/lib/dms_engine/cache
+    sudo chown -R www-data:www-data /var/lib/dms_engine \
+         /opt/dms_engine/doc_engine1/ocr/ocr_workspace
+    sudo systemctl daemon-reload
+    sudo systemctl enable --now dms-ocr
+    sudo journalctl -u dms-ocr -f
+
+
+================================================================================
+ 11. NGINX REVERSE PROXY  (needed for TLS / a domain)
+================================================================================
+
+/etc/nginx/sites-available/dms-ocr :
+
+    server {
+        listen 80;
+        server_name ocr.example.com;
+
+        # Scans are multi-MB. nginx default is 1 MB and silently 413s.
+        client_max_body_size 50m;
+
+        location / {
+            proxy_pass         http://127.0.0.1:8000;
+            proxy_set_header   Host $host;
+            proxy_set_header   X-Real-IP $remote_addr;
+
+            # /download builds the searchable PDF on first request: ~140s of
+            # ocrmypdf. nginx default read timeout is 60s and would 504.
+            proxy_read_timeout    900s;
+            proxy_send_timeout    900s;
+            proxy_connect_timeout 30s;
+            proxy_buffering       off;
+        }
+    }
+
+    sudo apt-get install -y nginx certbot python3-certbot-nginx
+    sudo ln -s /etc/nginx/sites-available/dms-ocr /etc/nginx/sites-enabled/
+    sudo rm -f /etc/nginx/sites-enabled/default      # stop the welcome page
+    sudo nginx -t && sudo systemctl reload nginx
+    sudo certbot --nginx -d ocr.example.com          # TLS, auto-renews
+
+
+================================================================================
+ 11b. FIREWALL / CLOUD SECURITY GROUP  (the usual "why can't I connect")
+================================================================================
+
+TWO layers can block you. Both must allow the port.
+
+Layer 1 - the OS firewall (ufw):
+    sudo ufw status
+    # if active:
+    sudo ufw allow 22/tcp          # keep SSH open or you lock yourself out
+    sudo ufw allow 80/tcp
+    sudo ufw allow 443/tcp
+    # ONLY if you skipped nginx and expose uvicorn directly:
+    sudo ufw allow 8000/tcp
+    sudo ufw reload
+
+Layer 2 - your cloud provider's security group / network rules. This is
+separate from ufw and is the more common culprit. Open the same ports in:
+    AWS      EC2 > Security Groups > Inbound rules
+    GCP      VPC network > Firewall
+    Azure    Network security group > Inbound security rules
+    RunPod / Vast.ai / Lambda  -> "expose HTTP port" in the pod config
+
+NEVER expose these:
+    11434   Ollama - no auth at all, anyone could run inference on your GPU.
+            Keep OLLAMA_HOST=127.0.0.1 (section 5).
+    8000    if nginx is in front. Bind uvicorn to 127.0.0.1 (section 10) so it
+            is unreachable from outside except through the proxy.
+
+Confirm what is actually listening and on which interface:
+    sudo ss -tlnp | grep -E "8000|11434|:80|:443"
+    # 127.0.0.1:8000  = local only (correct when behind nginx)
+    # 0.0.0.0:8000    = exposed to the internet (only OK if that is intended
+    #                   AND OCR_API_KEY is set - see section 7g)
+
+Test from your own machine, not from the server:
+    curl -sS http://<server-ip>/health        # via nginx
+    curl -sS http://<server-ip>:8000/health   # direct, if you skipped nginx
+
+
+================================================================================
+ 12. VERIFICATION CHECKLIST  (tick every line before calling it done)
+================================================================================
+
+  [ ] nvidia-smi works
+  [ ] tesseract --list-langs    shows eng AND kan
+  [ ] gs --version              prints a version
+  [ ] ollama ps                 shows the model at 100% GPU
+  [ ] python -c "from PIL import features; print(features.check('raqm'))"
+                                prints True
+  [ ] GET /health   -> font_file points into ocr/fonts/ (NOT C:\Windows
+                       and NOT /usr/share/fonts)
+  [ ] GET /health   -> raqm true, ollama_up true, tesseract true
+  [ ] /health JSON from server == /health JSON from local, for the fields
+      font_file (same basename), raqm, pillow
+  [ ] POST /extract with a known test page. Compare the returned text_data
+      font_px values against the same page run locally - they should match.
+  [ ] Open the returned .docx in Word. Text sits on the printed lines.
+  [ ] GET /download/{job_id} returns a searchable PDF (this exercises
+      Tesseract + Ghostscript)
+  [ ] Frontend loads at http://server:8000/ and Extract works end to end
+  [ ] Upload 3 images at once - none of them time out (proves 7d/7e)
+  [ ] ls -l ocr/fonts/    shows Nirmala.ttc + NirmalaB.ttf, owned by the
+                          service user (www-data)
+  [ ] sudo ss -tlnp       shows 11434 on 127.0.0.1 ONLY (Ollama not exposed)
+  [ ] curl from your LAPTOP (not the server) reaches /health - proves the
+      cloud security group and ufw are both open
+  [ ] sudo reboot, then curl /health again without touching anything -
+      proves the systemd units are enabled, not just started
+
+
+================================================================================
+ 13. BEFORE YOU git clone ON THE SERVER  (important)
+================================================================================
+
+.gitignore in doc_engine1/ is saved as UTF-16LE with a BOM, so git cannot
+parse a single line of it. Verified:
+    git check-ignore -v ocr/venv/Scripts/python.exe   -> exit 1 (NOT ignored)
+
+Consequence: 6,628 files of the WINDOWS venv are tracked in the repo,
+including python.exe and Windows .pyd binaries. Cloning that onto Linux gives
+you a huge, confusing, useless tree - and `ocr/venv/` will collide with the
+Linux venv you create in section 4.
+
+Fix on your Windows machine BEFORE deploying:
+
+  1. Re-save .gitignore as UTF-8 (no BOM) with this content:
+        venv/
+        .venv/
+        ocr/venv/
+        __pycache__/
+        *.pyc
+        *.exe
+        *.zip
+        ocr/ocr_workspace/
+        ocr/test_out_*/
+        ocr/rev_*/
+        ocr/aligned_out*/
+        ocr/annex_out/
+        error_log.txt
+
+  2. Untrack what should never have been committed. Run in Git Bash from
+     doc_engine1/ (-r --cached removes from the INDEX only, your local files
+     on disk are NOT deleted):
+
+        git rm -r --cached --quiet ocr/venv
+        git rm -r --cached --quiet ocr/ocr_workspace
+        git rm -r --cached --quiet ocr/__pycache__
+        git rm -r --cached --quiet ocr/test_out_*          # globs all 19
+        git rm -r --cached --quiet ocr/rev_*               # annexure/index/textpg
+        git rm -r --cached --quiet ocr/aligned_out* ocr/annex_out
+        git rm --cached ocr/gs_installer.exe ocr/NotoSansKannada.zip
+
+     Confirm before committing - this should print nothing:
+        git ls-files | grep -E "ocr/venv/|ocr/ocr_workspace/|\.pyc$"
+
+     Confirm the fonts ARE still tracked - this should print two lines:
+        git ls-files ocr/fonts
+
+        git commit -m "untrack venv, workspace artifacts and installers"
+
+     Note: this only stops FUTURE clones being huge. The 6,628 files remain in
+     history, so the repo download size is unchanged. If that matters, rewrite
+     history with `git filter-repo --path ocr/venv --invert-paths` (destructive;
+     coordinate with anyone else using the repo first).
+
+  3. DO commit ocr/fonts/ (section 6) - it must ship with the code.
+     Add an exception if you keep *.zip/*.exe ignored patterns broad.
+
+
+================================================================================
+ 14. KNOWN BUGS STILL PRESENT (decide whether to fix before or after deploy)
+================================================================================
+
+  A) DOCX text is misaligned by the skew angle - PRE-EXISTING, ALSO LOCAL.
+     Line boxes are detected in DESKEWED coordinates, but with the default
+     keep_skew=True the background is inpainted from the ORIGINAL image
+     (aligned_pipeline.py:1009). render() computes the correction into
+     b["orig_cx"]/b["orig_cy"] (line 1035) and NOTHING EVER READS IT -
+     write_docx uses the raw b["x"]/b["y"] (line 1126), and so does text_data.
+     Result: .docx text and the frontend boxes are rotated off the background,
+     error growing toward the page edges. Only *_overlay.png is correct.
+     Deploying as-is faithfully reproduces this. Fix = use orig_cx/orig_cy in
+     write_docx + text_data, or pass keep_skew=False from main.py.
+
+  B) alignment_median_pct is always null. score_alignment() only runs when
+     keep_skew=False (line 1222), but process_page defaults to True and
+     main.py never overrides. The UI prints "alignment null%".
+
+  C) Frontend error handling does not work. app.js:222 wraps
+     canvas.toBlob(async cb) in try/catch/finally; the callback is deferred so
+     `finally` hides the spinner immediately (before the ~140s request) and any
+     fetch error becomes an unhandled rejection with no message to the user.
+
+  D) A second "Extract" click OCRs the already-erased page, because
+     state.image is replaced by the text-removed preview (app.js:251).
+
+  E) ocr_workspace/ is never cleaned. 155 job dirs locally already. Add a cron:
+       0 3 * * * find /opt/dms_engine/doc_engine1/ocr/ocr_workspace -maxdepth 1 \
+                 -type d -mtime +7 -exec rm -rf {} +
+     (do NOT let it delete .ocr_cache.json - it is a file, -type d is safe)
+
+  F) Dead code you can delete: ocr/docx_generator.py (573 lines - its
+     generate_formatted_docx is imported at main.py:462 and never called, and
+     that import alone forces the pytesseract dependency at startup);
+     createDocxPreview + createDocxAfterExtraction in app.js (~90 lines);
+     Fitter.fit (assign_font_sizes does its own fitting).
+
+  G) ocr/ensemble.py is a working PaddleOCR-VL + Tesseract chooser scored on
+     Kannada abugida structural rules. Its docstring reports the two engines
+     win on DIFFERENT lines (52.6% vs 41.8%), so combining should beat both.
+     It is NOT imported anywhere. Probably the cheapest accuracy win available.
+
+  H) The 10 test_*.py scripts hardcode c:\Users\avin4\... paths and will not
+     run on the server. README.md and FRONTEND_GUIDE.md also still tell you to
+     cd into c:\Users\avin4\Desktop\basha_scans_layout\ocr.
+
+
+================================================================================
+ 15. TROUBLESHOOTING QUICK REFERENCE
+================================================================================
+
+ "aligned pipeline failed: <urlopen error>"
+     Ollama is not running or OLLAMA_URL is wrong.  systemctl status ollama
+
+ Kannada comes out as Telugu characters
+     Expected upstream - PaddleOCR-VL has no Kannada and emits Telugu; the
+     code shifts codepoints +0x80 (te_to_kn, aligned_pipeline.py:492). If raw
+     Telugu is leaking through, that string bypassed te_to_kn.
+
+ Kannada renders as boxes / broken conjuncts in overlay.png
+     libraqm missing. See section 4.
+
+ Font sizes differ from local
+     /health font_file differs. See section 6.
+
+ Bold lines look the same as regular
+     BOLD_CANDIDATES not applied (section 6 step 3).
+
+ 413 Request Entity Too Large
+     nginx client_max_body_size (section 11).
+
+ 504 Gateway Timeout on /download
+     nginx proxy_read_timeout (section 11). The PDF genuinely takes ~140s.
+
+ First request after idle is very slow
+     OLLAMA_KEEP_ALIVE not set to -1 (section 5).
+
+ "cannot read <path>" on PDF upload
+     PyMuPDF missing.  pip install PyMuPDF==1.28.0
+
+ 500 on "download DOCX after editing text"
+     The main.py:504 unpack bug. See section 7a.
+
+ Everything hangs when 2 users upload at once
+     Sections 7d and 7e not applied.
+
+ "E: Unable to locate package python3.12"
+     You are on Ubuntu 22.04, which has no 3.12. Add deadsnakes - section 3b.
+
+ Connection refused / times out from my laptop, but curl works ON the server
+     Firewall. TWO layers - ufw AND the cloud security group. Section 11b.
+     Also check uvicorn is not bound to 127.0.0.1 if you skipped nginx:
+       sudo ss -tlnp | grep 8000
+
+ nvidia-smi: command not found
+     No driver. Section 3a. Do this BEFORE installing Ollama, or Ollama
+     configures itself for CPU and silently stays that way.
+
+ ImportError: libGL.so.1: cannot open shared object file
+     You installed opencv-python instead of opencv-python-headless.
+       pip uninstall -y opencv-python
+       pip install opencv-python-headless==4.8.0.76
+
+ Frontend loads but every request fails with a CORS error
+     app.js still points at localhost:8000 (section 7b) or CORS_ORIGINS does
+     not include the origin you are browsing from (section 7c).
+
+ Works for a week then "No space left on device"
+     ocr_workspace/ was never swept. Section 14E cron job.
+
+================================================================================
+ END
+================================================================================

@@ -10,7 +10,10 @@ let state = {
     backgroundColor: '#ffffff',
     fontSize: 14,
     editingBoxId: null,
-    apiBaseUrl: 'http://localhost:8000',
+    // Same origin: the API serves this page (see the StaticFiles mount in
+    // main.py). Hardcoding localhost:8000 broke every remote browser, because
+    // "localhost" resolved to the visitor's own machine.
+    apiBaseUrl: '',
     canvasScale: 1,  // Track scaling factor for text box positioning
     canvasOffsetX: 0,  // Offset due to centering
     canvasOffsetY: 0

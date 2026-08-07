@@ -17,6 +17,10 @@ logging.getLogger("ocrmypdf").setLevel(logging.ERROR)
 from fastapi import FastAPI, UploadFile, File, HTTPException, Form
 from fastapi.responses import PlainTextResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
+# process_page and run_ocrmypdf are heavy blocking calls (ocrmypdf alone is
+# ~140s) sitting inside async handlers. Without this, one upload freezes every
+# other client on the server.
+from starlette.concurrency import run_in_threadpool
 import ocrmypdf
 from ocrmypdf.exceptions import ExitCode
 from PIL import Image, ImageOps
@@ -36,11 +40,17 @@ app = FastAPI(
 )
 
 # Enable CORS for frontend communication
+# allow_origins=["*"] together with allow_credentials=True is a combination
+# browsers reject outright, so the old setting was both wide open and broken. The
+# UI is served from this same app (see the StaticFiles mount at the bottom of this
+# file), so same-origin is the normal case and CORS_ORIGINS stays empty unless
+# something external needs to call in — the DMS operation portal, for instance.
+_origins = [o.strip() for o in os.environ.get("CORS_ORIGINS", "").split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allow all origins (adjust for production)
-    allow_credentials=True,
-    allow_methods=["*"],
+    allow_origins=_origins,
+    allow_credentials=False,
+    allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
 
@@ -353,7 +363,7 @@ async def extract_raw_text(image: UploadFile = File(...)):
         f.write(contents)
     
     try:
-        exit_code, _, sidecar_txt = run_ocrmypdf(input_path, job_id)
+        exit_code, _, sidecar_txt = await run_in_threadpool(run_ocrmypdf, input_path, job_id)
         
         text = ""
         if os.path.exists(sidecar_txt):
@@ -389,7 +399,7 @@ async def extract_text(image: UploadFile = File(...), engine: str = Form("aligne
     if engine == "aligned":
         try:
             from aligned_pipeline import process_page
-            r = process_page(input_path, job_dir, want_docx=True)
+            r = await run_in_threadpool(process_page, input_path, job_dir, want_docx=True)
             # NOTE: the searchable PDF is NOT built here. It costs ~140s of
             # ocrmypdf/Tesseract and doubles the upload wait for something most
             # requests never fetch. /download builds it lazily on first use.
@@ -423,7 +433,7 @@ async def extract_text(image: UploadFile = File(...), engine: str = Form("aligne
         preprocessed_path = os.path.join(job_dir, "preprocessed.png")
         preprocess_for_ocr(input_path, preprocessed_path)
         text_with_positions = get_ocr_text_with_positions(preprocessed_path, input_path)
-        exit_code, _, sidecar_txt = run_ocrmypdf(input_path, job_id)
+        exit_code, _, sidecar_txt = await run_in_threadpool(run_ocrmypdf, input_path, job_id)
         text = ""
         if os.path.exists(sidecar_txt):
             with open(sidecar_txt, "r", encoding="utf-8") as f:
@@ -501,7 +511,10 @@ async def get_formatted_docx(image: UploadFile = File(...), text_data: str = For
             if img is None:
                 raise HTTPException(400, "cannot read uploaded image")
             H, W = img.shape[:2]
-            rot, ink, _, _ = normalise(img)
+            # normalise() returns 6 values (rot, ink, skew, frac, ink_sensitive, M).
+            # This unpacked 4, so every "edit the text then download the DOCX"
+            # request raised ValueError and returned a 500.
+            rot, ink, _, _, _, _ = normalise(img)
             boxes = []
             for i, it in enumerate(edited_text_data):
                 t = (it.get("text") or "").strip()
@@ -524,7 +537,7 @@ async def get_formatted_docx(image: UploadFile = File(...), text_data: str = For
         else:
             # No edits supplied -> run the full aligned pipeline
             from aligned_pipeline import process_page
-            r = process_page(input_path, job_dir, want_docx=True)
+            r = await run_in_threadpool(process_page, input_path, job_dir, want_docx=True)
             if r.get("docx") and os.path.exists(r["docx"]):
                 output_docx_path = r["docx"]
 
@@ -561,12 +574,62 @@ async def download_searchable_pdf(job_id: str):
         if not src:
             raise HTTPException(404, "source image for job not found")
         try:
-            run_ocrmypdf(src, job_id)
+            await run_in_threadpool(run_ocrmypdf, src, job_id)
         except Exception as e:
             raise HTTPException(500, f"searchable PDF generation failed: {e}")
     if not os.path.exists(pdf_path):
         raise HTTPException(404, "PDF not found")
     return FileResponse(pdf_path, media_type="application/pdf", filename=f"{job_id}_searchable.pdf")
 
+
+@app.get("/health")
+def health():
+    """
+    Prove this host is configured the same as the one the output was tuned on.
+
+    Font metrics decide layout: assign_font_sizes() shrinks the size until the text
+    fits its detected box, so a different font file gives different font_px and a
+    different DOCX. Compare this JSON between machines — font_file, raqm and pillow
+    must match or the output will drift.
+    """
+    import shutil
+    import urllib.request
+    import PIL
+    from PIL import features
+    from aligned_pipeline import pick_font, OLLAMA, DEFAULT_MODEL
+    try:
+        urllib.request.urlopen(f"{OLLAMA}/api/tags", timeout=3)
+        ollama_up = True
+    except Exception:
+        ollama_up = False
+    return {
+        "status": "ok",
+        "font_file": pick_font(),
+        # libraqm shapes complex Indic scripts. Without it Kannada conjuncts and
+        # matras render wrong even with the right font file.
+        "raqm": features.check("raqm"),
+        "pillow": PIL.__version__,
+        "ollama_url": OLLAMA,
+        "ollama_up": ollama_up,
+        "model": DEFAULT_MODEL,
+        "tesseract": bool(shutil.which("tesseract")),
+        "ghostscript": bool(shutil.which("gs")),
+    }
+
+
+# The UI is served by this same app so there is one port and no CORS. app.js used
+# to hardcode http://localhost:8000, which only works when the browser is on the
+# same machine as the API — a remote user's "localhost" is their own PC.
+#
+# MUST be mounted after every @app route: a mount at "/" shadows anything declared
+# after it.
+from fastapi.staticfiles import StaticFiles  # noqa: E402
+
+app.mount("/", StaticFiles(directory=os.path.dirname(os.path.abspath(__file__)),
+                           html=True), name="ui")
+
+
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    # Port comes from the environment: on the GPU server 8000 and 8001 are already
+    # taken by other services, so this deployment runs on 8080.
+    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("OCR_PORT", "8080")))

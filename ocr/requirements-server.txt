@@ -1,0 +1,25 @@
+# Pinned to what the ORIGINAL AUTHOR'S WORKING MACHINE actually has, read from its
+# venv rather than from requirements.txt. Use THIS file on the server.
+#
+# ocr/requirements.txt is out of date and installing it gives a different stack:
+#   fastapi     0.104.1 -> 0.136.0
+#   uvicorn     0.24.0  -> 0.45.0
+#   ocrmypdf    16.13.0 -> 17.4.2   (major version behind)
+#   pytesseract 0.3.10  -> 0.3.13
+#   Pillow      unpinned, so it drifts - and Pillow does the text measuring that
+#               decides font size, so drift changes the output
+#   PyMuPDF     NOT LISTED AT ALL - imported as `fitz` by aligned_pipeline.py for
+#               PDF input, so without it every PDF upload returns a 500
+#
+# opencv-python-headless, not opencv-python: the code never calls imshow/waitKey/
+# namedWindow, headless avoids needing libGL on a server, and it is the same
+# version with identical numeric output.
+fastapi==0.136.0
+uvicorn==0.45.0
+ocrmypdf==17.4.2
+pytesseract==0.3.13
+opencv-python-headless==4.8.0.76
+numpy==1.26.4
+Pillow==12.2.0
+python-docx==1.2.0
+PyMuPDF==1.28.0
