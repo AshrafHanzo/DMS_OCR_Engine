@@ -1,0 +1,285 @@
+╔════════════════════════════════════════════════════════════════════════════╗
+║                    🎨 OCR EDITOR - QUICK START GUIDE                       ║
+╚════════════════════════════════════════════════════════════════════════════╝
+
+
+📋 WHAT WAS CREATED:
+═══════════════════════════════════════════════════════════════════════════
+
+  ✅ Frontend Web Application (HTML/CSS/JS)
+     • Modern UI with image upload
+     • Real-time text extraction via /extract endpoint
+     • Live editable text boxes (like MS Word)
+     • Background color auto-detection
+     • Download DOCX & PDF
+
+  ✅ Backend API Server (FastAPI)
+     • Optimized OCR pipeline
+     • /extract endpoint → extracts text + returns job_id
+     • /formatted endpoint → generates DOCX with background
+     • /download endpoint → searchable PDF
+     • CORS enabled for frontend communication
+
+  ✅ Easy Launchers
+     • start.bat (Windows Command Prompt)
+     • start.ps1 (PowerShell)
+     • serve_frontend.py (Static file server)
+
+
+🚀 QUICK START - Choose Your Method:
+═══════════════════════════════════════════════════════════════════════════
+
+  METHOD 1: Batch File (Easiest)
+  ──────────────────────────────
+  1. Open File Explorer
+  2. Navigate to: c:\Users\avin4\Desktop\basha_scans_layout\ocr
+  3. Double-click: start.bat
+  4. Wait for servers to start
+  5. Browser opens automatically to: http://localhost:8080
+
+  ✓ Both API and Frontend servers start automatically
+  ✓ No extra terminal windows needed
+  ✓ Easiest method
+
+
+  METHOD 2: PowerShell (Recommended)
+  ──────────────────────────────────
+  1. Open PowerShell
+  2. Run command:
+     cd c:\Users\avin4\Desktop\basha_scans_layout\ocr
+     powershell -ExecutionPolicy Bypass -File start.ps1
+  3. Wait for servers to start
+  4. Browser opens automatically to: http://localhost:8080
+
+  ✓ More control and visibility
+  ✓ Better error messages
+
+
+  METHOD 3: Manual (For Debugging)
+  ────────────────────────────────
+  Terminal 1 - Backend API:
+    cd c:\Users\avin4\Desktop\basha_scans_layout\ocr
+    python main.py
+    
+  Terminal 2 - Frontend:
+    cd c:\Users\avin4\Desktop\basha_scans_layout\ocr
+    python serve_frontend.py
+    
+  Browser:
+    Open: http://localhost:8080
+
+  ✓ Full control
+  ✓ See all debug output
+
+
+📖 USING THE APPLICATION:
+═══════════════════════════════════════════════════════════════════════════
+
+  STEP 1: Upload Image
+  ────────────────────
+  □ Open http://localhost:8080 in browser
+  □ Drag image to upload area OR click to select
+  □ Supported formats: JPG, PNG, GIF, WebP
+  □ Image displays on canvas with auto-detected background color
+
+  STEP 2: Extract Text
+  ────────────────────
+  □ Click "🔍 Extract Text" button
+  □ Shows loading spinner
+  □ Sends image to /extract endpoint
+  □ Backend performs OCR (Kannada + English)
+  □ Text appears as editable boxes on canvas
+  □ Statistics panel shows character counts
+
+  STEP 3: Edit Text (Like MS Word)
+  ────────────────────────────────
+  □ Click any text box to edit
+  □ Box turns yellow, shows input field
+  □ Type to modify or replace text
+  □ Press ENTER to save
+  □ Press ESC to cancel
+  □ Click outside to save changes
+
+  STEP 4: Download
+  ────────────────
+  DOCX Option:
+    □ Click "📄 Download DOCX"
+    □ Gets file with background image + editable text boxes
+    □ Open in Microsoft Word
+    □ Edit further if needed
+
+  PDF Option:
+    □ Click "📕 Download PDF"
+    □ Gets searchable PDF with OCR layer
+    □ Can search text with Ctrl+F in PDF viewer
+
+
+🎨 INTERFACE LAYOUT:
+═══════════════════════════════════════════════════════════════════════════
+
+  ┌─────────────────────────────────────────────────────────────────┐
+  │                    HEADER (Blue Banner)                          │
+  ├─────────────────────────────────────────────────────────────────┤
+  │ ┌──────────────┐  ┌─────────────────────────┐  ┌─────────────┐ │
+  │ │   SIDEBAR    │  │   CANVAS / EDITOR       │  │   RIGHT     │ │
+  │ │              │  │   (Image with text      │  │   SIDEBAR   │ │
+  │ │ • Upload     │  │    boxes overlaid)      │  │             │ │
+  │ │ • Controls   │  │                         │  │ • Text List │ │
+  │ │ • Actions    │  │   Click text to edit    │  │ • Stats     │ │
+  │ │ • Info       │  │   (Like MS Word)        │  │             │ │
+  │ │              │  │                         │  │             │ │
+  │ └──────────────┘  └─────────────────────────┘  └─────────────┘ │
+  └─────────────────────────────────────────────────────────────────┘
+
+
+⚙️ CONTROLS EXPLAINED:
+═══════════════════════════════════════════════════════════════════════════
+
+  Upload Section:
+    • Drag & drop area (or click to browse)
+    • Shows upload status
+
+  Controls Section:
+    • Show Text Boxes (toggle visibility)
+    • Auto Background Color (auto-detect color)
+    • Custom Color Picker (manual color selection)
+    • Font Size Slider (8-32 pixels)
+
+  Actions Section:
+    • Extract Text → Calls /extract endpoint
+    • Download DOCX → Calls /formatted endpoint
+    • Download PDF → Calls /download endpoint
+    • Clear All → Resets everything
+
+
+🔗 ENDPOINTS USED:
+═══════════════════════════════════════════════════════════════════════════
+
+  1. POST /extract
+     └─ Sends image
+     └─ Returns: job_id, extracted_text, languages
+     └─ Used by: "Extract Text" button
+
+  2. POST /formatted
+     └─ Sends image
+     └─ Returns: DOCX file with background + text
+     └─ Used by: "Download DOCX" button
+
+  3. GET /download/{job_id}
+     └─ Returns: Searchable PDF
+     └─ Used by: "Download PDF" button
+
+
+📊 FEATURES:
+═══════════════════════════════════════════════════════════════════════════
+
+  ✓ Multilingual Support (Kannada + English)
+  ✓ Background Color Auto-Detection
+  ✓ Live Text Editing (like MS Word)
+  ✓ DOCX with Background + Overlaid Text
+  ✓ Searchable PDF Download
+  ✓ Character Statistics (Kannada/English/Total)
+  ✓ Responsive Design (works on mobile too)
+  ✓ Real-time Rendering
+  ✓ Font Auto-Selection (Kannada fonts for Kannada text)
+  ✓ Drag & Drop Upload
+
+
+🔍 TROUBLESHOOTING:
+═══════════════════════════════════════════════════════════════════════════
+
+  Problem: "Cannot find module ocrmypdf"
+  └─ Solution: pip install -r requirements.txt
+
+  Problem: "Tesseract not found"
+  └─ Solution: Install from https://github.com/UB-Mannheim/tesseract/wiki
+
+  Problem: "Connection refused on port 8000"
+  └─ Solution: Make sure main.py is running in a terminal
+
+  Problem: "Port 8080 already in use"
+  └─ Solution: Edit serve_frontend.py and change PORT = 8080 to 8081
+
+  Problem: "Text boxes not appearing"
+  └─ Solution: Check "Show Text Boxes" in Controls
+
+  Problem: "Text editing not working"
+  └─ Solution: Click the text box first to focus it
+
+  Problem: "Background color not detected"
+  └─ Solution: Manually pick color using color picker
+
+
+📚 DOCUMENTATION:
+═══════════════════════════════════════════════════════════════════════════
+
+  README.md
+  └─ Complete system overview and architecture
+
+  FRONTEND_GUIDE.md
+  └─ Detailed frontend usage and API reference
+
+  SETUP_GUIDE.md
+  └─ System setup and configuration
+
+  API Docs (Interactive):
+  └─ http://localhost:8000/docs
+
+
+✨ EXAMPLE WORKFLOW:
+═══════════════════════════════════════════════════════════════════════════
+
+  1. Run: start.bat
+  2. Browser opens to: http://localhost:8080
+  3. Drag image to upload area
+  4. Background color auto-detects
+  5. Click "Extract Text"
+  6. Text appears as editable boxes
+  7. Click "Line 1" text box
+  8. Edit: "Hello" → "Namaste"
+  9. Press Enter to save
+  10. Click "Download DOCX"
+  11. Open in Microsoft Word
+  12. Image is background, text is editable
+
+
+🎯 KEY POINTS:
+═══════════════════════════════════════════════════════════════════════════
+
+  ✓ Frontend uses /extract endpoint (main endpoint)
+  ✓ All servers run locally (0.0.0.0:8000 for API, 0.0.0.0:8080 for UI)
+  ✓ CORS is enabled (frontend can talk to backend)
+  ✓ No external APIs needed (everything local)
+  ✓ Job files auto-cleaned after download
+  ✓ Supports both Kannada and English OCR
+  ✓ Text is fully editable like MS Word
+  ✓ Background color is preserved in exports
+
+
+🌐 ACCESSIBLE FROM:
+═══════════════════════════════════════════════════════════════════════════
+
+  Local Machine:
+  └─ http://localhost:8080
+
+  Other Machines (on same network):
+  └─ http://{YOUR_IP}:8080
+  └─ API: http://{YOUR_IP}:8000
+  └─ API Docs: http://{YOUR_IP}:8000/docs
+
+
+╔════════════════════════════════════════════════════════════════════════════╗
+║                                                                            ║
+║  Ready to start? Run this command:                                        ║
+║                                                                            ║
+║  Windows Batch:                                                           ║
+║    start c:\Users\avin4\Desktop\basha_scans_layout\ocr\start.bat          ║
+║                                                                            ║
+║  PowerShell:                                                              ║
+║    powershell -ExecutionPolicy Bypass -File start.ps1                     ║
+║                                                                            ║
+║  Then open browser to: http://localhost:8080                              ║
+║                                                                            ║
+║  Happy OCRing! 🎉                                                         ║
+║                                                                            ║
+╚════════════════════════════════════════════════════════════════════════════╝

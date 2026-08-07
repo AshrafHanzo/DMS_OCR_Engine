@@ -1,0 +1,25 @@
+fastapi==0.104.1
+uvicorn==0.24.0
+ocrmypdf==16.13.0
+pytesseract==0.3.10
+opencv-python==4.8.0.76
+numpy<2                 # opencv-python 4.8.0.76 is built against NumPy 1.x; NumPy 2 breaks `import cv2`
+Pillow>=10.0.0
+python-docx>=1.0.0
+
+# pdf2docx is only used by the standalone test_*.py scripts, NOT by the API.
+# It depends on opencv-python-headless, which overwrites the opencv-python
+# install above and pulls NumPy 2. Install it in a separate venv if needed:
+#   pdf2docx==0.5.12
+
+# Optional system dependencies (NOT required for core functionality):
+# - jbig2: Used for PDF image optimization. Install on Linux via: apt-get install jbig2enc
+#   On macOS: brew install jbig2enc
+#   Windows users: Not easily available, OCR works without it
+#
+# - pngquant: Used for PNG compression. Install on Linux via: apt-get install pngquant
+#   On macOS: brew install pngquant
+#   Windows users: Not easily available, OCR works without it
+#
+# These tools optimize PDF file sizes but are NOT required for OCR to work.
+# Set optimize=0 in ocrmypdf.ocr() calls to disable optimization attempts.

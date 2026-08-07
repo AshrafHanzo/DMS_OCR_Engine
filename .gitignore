@@ -1,0 +1,61 @@
+# DMS OCR Engine - what must never be committed.
+#
+# The upstream repo tracked 7,195 files including the whole virtualenv, which is
+# why its history is five successive "removed venv" commits that never worked.
+# This list is the fix.
+
+# --- Virtualenvs (6,800+ files) ---------------------------------------------
+venv/
+.venv/
+env/
+ENV/
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# --- Runtime output ---------------------------------------------------------
+# ocr_workspace is one folder per OCR job, created at runtime. It grows with
+# every request - scratch space, not source.
+ocr_workspace/
+aligned_out*/
+annex_out/
+rev_annexure/
+rev_index/
+rev_textpg/
+test_out_*/
+*.log
+
+# --- Installers and binaries ------------------------------------------------
+# gs_installer.exe is 62MB and is a WINDOWS Ghostscript installer - useless on
+# the Linux GPU server, where Ghostscript comes from apt.
+*.exe
+*.msi
+
+# --- Tesseract language data (25MB) -----------------------------------------
+# Needed at runtime, not source. On the server it comes from
+# `apt install tesseract-ocr-eng tesseract-ocr-kan`.
+tessdata/
+*.traineddata
+
+# --- Fonts ------------------------------------------------------------------
+# Installed via apt (fonts-noto, fonts-lohit-knda) rather than stored.
+NotoSansKannada.zip
+*.ttf
+*.otf
+*.ttc
+
+# --- Unrelated to this project ----------------------------------------------
+# Lead-generation spreadsheets and a LinkedIn scraping skill bundled with the
+# upstream repo. Nothing here uses them.
+*.xlsx
+.github/
+
+# --- Test artefacts ---------------------------------------------------------
+test_doc*.docx
+test_output*.txt
+
+# --- Editor / OS ------------------------------------------------------------
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
