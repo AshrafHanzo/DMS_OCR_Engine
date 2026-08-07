@@ -32,7 +32,7 @@
   METHOD 1: Batch File (Easiest)
   ──────────────────────────────
   1. Open File Explorer
-  2. Navigate to: c:\Users\avin4\Desktop\basha_scans_layout\ocr
+  2. Navigate to: <REPO>\ocr
   3. Double-click: start.bat
   4. Wait for servers to start
   5. Browser opens automatically to: http://localhost:8080
@@ -46,7 +46,7 @@
   ──────────────────────────────────
   1. Open PowerShell
   2. Run command:
-     cd c:\Users\avin4\Desktop\basha_scans_layout\ocr
+     cd <REPO>\ocr
      powershell -ExecutionPolicy Bypass -File start.ps1
   3. Wait for servers to start
   4. Browser opens automatically to: http://localhost:8080
@@ -58,11 +58,11 @@
   METHOD 3: Manual (For Debugging)
   ────────────────────────────────
   Terminal 1 - Backend API:
-    cd c:\Users\avin4\Desktop\basha_scans_layout\ocr
+    cd <REPO>\ocr
     python main.py
     
   Terminal 2 - Frontend:
-    cd c:\Users\avin4\Desktop\basha_scans_layout\ocr
+    cd <REPO>\ocr
     python serve_frontend.py
     
   Browser:
@@ -273,7 +273,7 @@
 ║  Ready to start? Run this command:                                        ║
 ║                                                                            ║
 ║  Windows Batch:                                                           ║
-║    start c:\Users\avin4\Desktop\basha_scans_layout\ocr\start.bat          ║
+║    start <REPO>\ocr\start.bat          ║
 ║                                                                            ║
 ║  PowerShell:                                                              ║
 ║    powershell -ExecutionPolicy Bypass -File start.ps1                     ║

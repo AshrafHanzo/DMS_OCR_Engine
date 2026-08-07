@@ -33,13 +33,13 @@ Easy-to-use launchers:
 
 **Windows (Command Prompt):**
 ```bash
-cd c:\Users\avin4\Desktop\basha_scans_layout\ocr
+cd <REPO>\ocr
 start.bat
 ```
 
 **Windows (PowerShell):**
 ```powershell
-cd c:\Users\avin4\Desktop\basha_scans_layout\ocr
+cd <REPO>\ocr
 powershell -ExecutionPolicy Bypass -File start.ps1
 ```
 
@@ -47,13 +47,13 @@ powershell -ExecutionPolicy Bypass -File start.ps1
 
 **Terminal 1 - Backend API:**
 ```bash
-cd c:\Users\avin4\Desktop\basha_scans_layout\ocr
+cd <REPO>\ocr
 python main.py
 ```
 
 **Terminal 2 - Frontend:**
 ```bash
-cd c:\Users\avin4\Desktop\basha_scans_layout\ocr
+cd <REPO>\ocr
 python serve_frontend.py
 ```
 

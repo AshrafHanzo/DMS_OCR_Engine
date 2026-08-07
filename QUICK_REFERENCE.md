@@ -4,7 +4,7 @@
 
 ```bash
 # 1. Navigate to project
-cd C:\Users\avin4\Desktop\basha_scans_layout
+cd <REPO>
 
 # 2. Run launcher
 start_ocr.bat

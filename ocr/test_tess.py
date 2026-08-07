@@ -1,10 +1,11 @@
+import os
 import cv2
 import numpy as np
 from PIL import Image, ImageOps
 import pytesseract
 import time
 
-img_path = r"c:\Users\avin4\Desktop\AGENDA 424TH B M DT 23-03-2022 H G M L\Resim000006.jpg"
+img_path = os.environ.get("OCR_TEST_IMAGE", "test_page.jpg")
 
 def test_preprocess():
     pimg = Image.open(img_path)

@@ -148,23 +148,23 @@ Documentation (4 files):
 ═══════════════════════════════════════════════════════════════════
 
 Option 1 - Windows Batch (Easiest):
-  $ start c:\Users\avin4\Desktop\basha_scans_layout\ocr\start.bat
+  $ start <REPO>\ocr\start.bat
   → Both servers start automatically
   → Browser opens to http://localhost:8080
 
 Option 2 - PowerShell:
-  $ cd c:\Users\avin4\Desktop\basha_scans_layout\ocr
+  $ cd <REPO>\ocr
   $ powershell -ExecutionPolicy Bypass -File start.ps1
   → Both servers start automatically
   → Browser opens to http://localhost:8080
 
 Option 3 - Manual (for debugging):
   Terminal 1:
-    $ cd c:\Users\avin4\Desktop\basha_scans_layout\ocr
+    $ cd <REPO>\ocr
     $ python main.py          # API on port 8000
   
   Terminal 2:
-    $ cd c:\Users\avin4\Desktop\basha_scans_layout\ocr
+    $ cd <REPO>\ocr
     $ python serve_frontend.py # UI on port 8080
   
   Browser:
@@ -297,7 +297,7 @@ Integration:
 ════════════════════════════════════════════════════════════════════
 
 1. Run the application:
-   $ start c:\Users\avin4\Desktop\basha_scans_layout\ocr\start.bat
+   $ start <REPO>\ocr\start.bat
 
 2. Open in browser:
    → http://localhost:8080

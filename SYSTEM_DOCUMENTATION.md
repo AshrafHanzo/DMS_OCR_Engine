@@ -72,7 +72,7 @@ A complete web-based OCR (Optical Character Recognition) solution that:
 ## 📁 File Structure
 
 ```
-basha_scans_layout/
+dms_engine/
 ├── ocr/
 │   ├── main.py                    ← Backend API (FastAPI)
 │   ├── docx_generator.py          ← DOCX creation logic
@@ -659,7 +659,7 @@ Status: PRODUCTION READY ✅
 
 ### **1. Start the System**
 ```bash
-cd C:\Users\avin4\Desktop\basha_scans_layout
+cd <REPO>
 start_ocr.bat
 # Opens browser at localhost:8080
 ```

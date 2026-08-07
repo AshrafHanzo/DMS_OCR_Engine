@@ -53,7 +53,7 @@ Complete OCR system with:
 
 In terminal 1:
 ```bash
-cd c:\Users\avin4\Desktop\basha_scans_layout\ocr
+cd <REPO>\ocr
 python main.py
 ```
 
@@ -67,7 +67,7 @@ INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
 
 In terminal 2:
 ```bash
-cd c:\Users\avin4\Desktop\basha_scans_layout\ocr
+cd <REPO>\ocr
 python serve_frontend.py
 ```
 
@@ -334,7 +334,7 @@ curl -F "image=@test.jpg" http://localhost:8000/extract
 
 ### Test frontend locally
 ```bash
-python -m http.server 8080 --directory c:\Users\avin4\Desktop\basha_scans_layout\ocr
+python -m http.server 8080 --directory <REPO>\ocr
 ```
 
 Then open: http://localhost:8080

@@ -318,7 +318,7 @@ Total E2E Time:      12-18 seconds
 
 ### **Quick Start**
 ```
-cd basha_scans_layout
+cd dms_engine
 start_ocr.bat
 # Browser opens at localhost:8080
 ```

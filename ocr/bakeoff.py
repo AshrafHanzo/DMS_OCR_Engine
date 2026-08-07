@@ -85,13 +85,11 @@ def ollama_ocr(model, path, prompt):
 
 INDIC_TESSDATA = os.environ.get(
     "INDIC_TESSDATA",
-    r"C:\Users\avin4\AppData\Local\Temp\claude"
-    r"\c--Users-avin4-Desktop-dms-engine"
-    r"\245dca5c-e7a0-4238-8c3c-901241cb75c1\scratchpad\indic_tessdata")
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "indic_tessdata"))
 
 
 def tesseract(path, langs="kan+eng", tessdata=None, psm="7"):
-    exe = r"C:\Tesseract-OCR\tesseract.exe"
+    exe = os.environ.get("TESSERACT_EXE", r"C:\Tesseract-OCR	esseract.exe")
     if not os.path.exists(exe):
         exe = "tesseract"
     cmd = [exe, path, "stdout", "-l", langs, "--oem", "1", "--psm", psm]

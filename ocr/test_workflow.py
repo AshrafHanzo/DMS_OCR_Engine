@@ -13,7 +13,7 @@ from pathlib import Path
 
 # Configuration
 API_BASE = "http://localhost:8000"
-TEST_IMAGE = "C:\\Users\\avin4\\Desktop\\basha_scans_layout\\ocr\\test_output.txt"
+TEST_IMAGE = os.environ.get("OCR_TEST_OUTPUT", "test_output.txt")
 
 def test_extract_endpoint():
     """Test the /extract endpoint"""
@@ -23,7 +23,7 @@ def test_extract_endpoint():
     
     # Find a test image (using one from workspace)
     test_images = [
-        "C:\\Users\\avin4\\Desktop\\basha_scans_layout\\ocr_workspace\\409e60024ff3",
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "ocr_workspace"),
     ]
     
     for img_dir in test_images:

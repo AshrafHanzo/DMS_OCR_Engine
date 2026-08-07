@@ -832,7 +832,7 @@ Fix on your Windows machine BEFORE deploying:
 
   H) The 10 test_*.py scripts hardcode c:\Users\avin4\... paths and will not
      run on the server. README.md and FRONTEND_GUIDE.md also still tell you to
-     cd into c:\Users\avin4\Desktop\basha_scans_layout\ocr.
+     cd into <REPO>\ocr.
 
 
 ================================================================================

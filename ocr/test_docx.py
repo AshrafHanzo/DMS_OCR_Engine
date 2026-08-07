@@ -2,7 +2,7 @@ import ocrmypdf
 from pdf2docx import Converter
 import os
 
-img_path = r"c:\Users\avin4\Desktop\AGENDA 424TH B M DT 23-03-2022 H G M L\Resim000004.jpg"
+img_path = os.environ.get("OCR_TEST_IMAGE", "test_page.jpg")
 pdf_path = "test_doc.pdf"
 docx_path = "test_doc.docx"
 
