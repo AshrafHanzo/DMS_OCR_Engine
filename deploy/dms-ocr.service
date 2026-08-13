@@ -1,0 +1,62 @@
+[Unit]
+# OCR v3 — PaddleOCR-VL served through Ollama, wrapped by the FastAPI engine.
+#
+# Requires ollama.service rather than merely wanting it: without Ollama the engine
+# still starts and answers /health, but every page comes back with empty text. A
+# silent wrong answer is worse than a refusal to start.
+Description=DMS OCR Engine v3 (PaddleOCR-VL via Ollama)
+Documentation=file:/home/administrator/dms_engine/DEPLOY.txt
+After=network-online.target ollama.service
+Wants=network-online.target
+Requires=ollama.service
+
+[Service]
+Type=simple
+User=administrator
+Group=administrator
+
+# MUST be ocr/, not the repo root. main.py imports its siblings flat
+# (`from aligned_pipeline import ...`, `from docx_generator import ...`), so that
+# directory has to be on sys.path. Starting with `uvicorn ocr.main:app` from the
+# repo root fails at import with ModuleNotFoundError: docx_generator.
+WorkingDirectory=/home/administrator/dms_engine/ocr
+
+# Both of these default to a directory INSIDE the git working tree, which puts
+# per-page scratch files and an ever-growing cache on the root disk. /sdb-disk is
+# the data disk.
+Environment="OCR_WORK_DIR=/sdb-disk/ocr-workspace"
+Environment="OCR_CACHE_DIR=/sdb-disk/ocr-cache"
+# Job directories are swept once they pass this age. The sweep is rate-limited to
+# roughly once a quarter-hour and runs on the /process/text path, so it costs
+# nothing per page.
+Environment="OCR_WORK_TTL_HOURS=24"
+# Recognition threads per page. Higher is pointless while OLLAMA_NUM_PARALLEL=1,
+# which a 2GB card forces: the threads just queue at Ollama.
+Environment="OCR_WORKERS=3"
+
+# --workers 1 is required, not a tuning choice. The recognition cache is loaded
+# once per process, so a second worker keeps its own copy and they overwrite each
+# other's file. On a 2GB card a second worker would also not fit in VRAM.
+#
+# Bound to 0.0.0.0 because the DMS application server calls this across the
+# internet. There is NO authentication on this port -- see deploy/README.md for the
+# ufw rules that restrict it to the DMS server. Without them anyone can queue work
+# on your GPU.
+ExecStart=/home/administrator/dms_engine/venv/bin/python -m uvicorn main:app \
+          --host 0.0.0.0 --port 8080 --workers 1 --timeout-keep-alive 65
+
+Restart=always
+RestartSec=5
+# A single page takes around 80 seconds on this hardware. systemd's default stop
+# timeout would kill a request mid-flight during a restart and the page would be
+# recorded as failed.
+TimeoutStopSec=180
+
+# Journal rather than a log file: no permissions to get wrong, and rotation is
+# already handled. Read it with `journalctl -u dms-ocr -f`.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=dms-ocr
+
+[Install]
+WantedBy=multi-user.target
