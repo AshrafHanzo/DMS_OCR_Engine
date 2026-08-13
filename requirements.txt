@@ -35,8 +35,8 @@ mdurl==0.1.2
 narwhals==2.20.0
 numpy==1.26.4
 ocrmypdf==16.13.0
-opencv-python==4.8.0.76
-opencv-python-headless==4.13.0.92
+# opencv-python removed: desktop build, needs libGL, unused here.
+opencv-python-headless>=4.9,<4.11
 packaging==26.2
 pandas==3.0.2
 pdf2docx==0.5.12
