@@ -58,6 +58,7 @@ pytesseract==0.3.10
 python-dateutil==2.9.0.post0
 python-docx==0.8.11
 python-dotenv==1.2.2
+python-multipart==0.0.9
 referencing==0.37.0
 requests==2.33.1
 rich==15.0.0
