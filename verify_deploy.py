@@ -14,6 +14,10 @@ that only surfaces at render time, a workspace filling the root disk.
     --cold   clear the recognition cache first, so the timing is a true cold cost
              rather than a cache hit. Use this when you want the number that
              decides throughput.
+    --wait   seconds to wait for the engine to answer, default 60. It is safe to
+             run this immediately after "systemctl start dms-ocr": the engine
+             imports cv2, fitz and ocrmypdf before uvicorn binds the port, which
+             takes several seconds on this hardware.
 
 Exit status is 0 only if every check passed, so it is safe to chain.
 """
@@ -107,6 +111,10 @@ def main():
     ap.add_argument("--url", default="http://localhost:8080")
     ap.add_argument("--doc", default=os.path.join(HERE, "ocr", "test_doc2.pdf"))
     ap.add_argument("--cold", action="store_true")
+    # Long enough to cover a cold start of the engine's imports on this hardware,
+    # short enough that a genuinely dead service is reported promptly.
+    ap.add_argument("--wait", type=int, default=60,
+                    help="seconds to wait for the engine to answer (default 60)")
     args = ap.parse_args()
     base = args.url.rstrip("/")
 
@@ -115,12 +123,32 @@ def main():
 
     # ── 1. the engine answers, and its own self-report is clean ──────────────
     section("1. engine health")
-    try:
-        h = get_json(f"{base}/health")
-    except Exception as e:
-        print(f"  {RED}FAIL{OFF}  cannot reach {base}/health   {type(e).__name__}: {e}")
-        print(f"\n{RED}the engine is not running. start it, then re-run this.{OFF}")
-        sys.exit(1)
+    # Wait rather than fail instantly. `systemctl enable --now` returns as soon as
+    # systemd has forked the process, but this engine imports cv2, fitz and ocrmypdf
+    # before uvicorn binds the port -- several seconds. Checking immediately after a
+    # start reports "the engine is not running" about an engine that is starting
+    # perfectly well, which sends you off reading journals for no reason.
+    h, deadline, waited = None, time.time() + args.wait, False
+    while True:
+        try:
+            h = get_json(f"{base}/health")
+            break
+        except Exception as e:
+            if time.time() >= deadline:
+                print(f"  {RED}FAIL{OFF}  cannot reach {base}/health   "
+                      f"{type(e).__name__}: {e}")
+                print(f"\n{RED}no answer after {args.wait}s.{OFF} Check it with:")
+                print("  systemctl status dms-ocr --no-pager")
+                print("  journalctl -u dms-ocr -n 40 --no-pager")
+                sys.exit(1)
+            if not waited:
+                print(f"  {DIM}waiting for the engine to bind "
+                      f"(up to {args.wait}s)…{OFF}")
+                waited = True
+            time.sleep(2)
+    if waited:
+        check("engine came up while waiting", True,
+              f"took a moment to import; that is normal")
 
     check("engine responds", h.get("status") == "ok", str(h.get("status")))
     # Each of these fails at a DIFFERENT point in the pipeline, which is why they
