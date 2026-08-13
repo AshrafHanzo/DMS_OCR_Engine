@@ -124,10 +124,18 @@ content and shared across jobs, so the same document is nearly free the second t
 
 **Cost scales with the number of detected lines, not with "a page".** Every detected
 line or block is a separate model call, so a sparse page and a dense one differ by
-several times. Measured on this hardware: a 15-line synthetic invoice took **83s**,
-about 5.5s per line. `ocr/test_doc2.pdf` detects 49 lines, so expect it to take
-**minutes**, not 80 seconds — quoting a flat per-page figure got two verification runs
-cancelled in the belief they had hung.
+several times.
+
+Measured on this hardware:
+
+| Page | Lines | Cold time | Per line |
+|---|---|---|---|
+| 15-line synthetic invoice | 15 | 83s | 5.5s |
+| `ocr/test_doc2.pdf`, a real Kannada scan | 49 | **188.8s** | 3.85s |
+
+That is ~19 pages/hour, ~458/day flat out. Quoting a flat per-page figure from the
+synthetic page got two verification runs cancelled in the belief they had hung, so
+plan from the per-line number against your own documents.
 
 For planning, use the per-line figure against your own documents rather than a
 pages-per-day number taken from someone else's page.
@@ -157,5 +165,5 @@ diverts every tenant pinned to it on their next page without unpicking assignmen
 | `no Kannada-capable font found`, after a long pause | Font packages missing. `/health` shows `font_file: null`, and would have told you before you spent the recognition time |
 | Every page returns empty text | Ollama down. `/health` shows `ollama_up: false` |
 | A page returns in ~1.6s | Cache hit, not real work. Run `verify_deploy.py --cold` |
-| Pages fail after ~300s in DMS | **The real risk on this hardware.** The Operator backend posts with `timeout=300`, chosen when v2 answered in seconds. At ~5.5s per detected line a 55-line page reaches 300s, so dense scans can time out in DMS while succeeding here. Measure a representative page before cutting a tenant over; if it lands near 300s the timeout has to become per-engine |
+| Pages fail after ~300s in DMS | **Fixed, but the migration must be run.** The Operator backend used a hard-coded `timeout=300`, chosen when v2 answered in seconds. Measured here: 188.8s for a 49-line scan, ~3.85s per line, so 300s runs out around 78 lines. Each engine now has its own timeout — run `migrate_ocr_timeout.py` in `Operator/backend` and set it on the OCR page. Without that migration every engine stays on 300s |
 | Disk filling | `OCR_WORK_DIR` / `OCR_CACHE_DIR` not set, so both are inside the repo on `/` |
