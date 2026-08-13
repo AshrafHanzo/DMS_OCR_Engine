@@ -122,8 +122,17 @@ through the endpoint DMS will call, and prints the per-page cost.
 about 1.6 seconds and looks 50× faster than reality — the cache is keyed by crop
 content and shared across jobs, so the same document is nearly free the second time.
 
-Expect roughly **80 seconds per page** on a P600: about 43 pages an hour, ~1,000 a
-day flat out. A warning about GPU placement being ~41% is expected and explained in
+**Cost scales with the number of detected lines, not with "a page".** Every detected
+line or block is a separate model call, so a sparse page and a dense one differ by
+several times. Measured on this hardware: a 15-line synthetic invoice took **83s**,
+about 5.5s per line. `ocr/test_doc2.pdf` detects 49 lines, so expect it to take
+**minutes**, not 80 seconds — quoting a flat per-page figure got two verification runs
+cancelled in the belief they had hung.
+
+For planning, use the per-line figure against your own documents rather than a
+pages-per-day number taken from someone else's page.
+
+A warning about GPU placement being ~41% is expected and explained in
 `ollama-override.conf`.
 
 ## 8. Point a tenant at it

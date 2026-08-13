@@ -235,63 +235,14 @@ def main():
             print(f"  {YELL}--cold: removed the cache so the timing below is a "
                   f"true cold cost{OFF}")
 
-    # ── 4. detection diagnostics on a real page ──────────────────────────────
-    # /extract saves every upload as input.jpg, so it cannot read a PDF. Render
-    # page 1 first. This is also how DMS should feed it if it ever wants positions.
-    section("4. detection on a real page")
-    if not os.path.exists(args.doc):
-        check("test document present", False, args.doc)
-    else:
-        png = args.doc
-        if args.doc.lower().endswith(".pdf"):
-            # A temp dir, NOT the engine's work_dir. Those paths now come from
-            # /health, so with --url they describe the ENGINE's filesystem, which
-            # this script may not share or be able to write to. Rendering there
-            # worked only by accident when both ran on the same box.
-            import tempfile
-            png = os.path.join(tempfile.gettempdir(), "verify_page1.png")
-            try:
-                import fitz
-                d = fitz.open(args.doc)
-                d[0].get_pixmap(dpi=200).save(png)
-                d.close()
-            except Exception as e:
-                check("render page 1 for /extract", False, f"{type(e).__name__}: {e}")
-                png = None
-        if png:
-            # Both this and section 5 run a full page through the model. On a small
-            # card that is over a minute each, with no output meanwhile -- which
-            # looks exactly like a hang, and got a previous run cancelled at this
-            # very line.
-            print(f"  {DIM}running a full page through the model — around 80s on a "
-                  f"P600, and it also builds a DOCX here. not stuck.{OFF}")
-            body, secs, code = post_file(f"{base}/extract", "image", png)
-            if code:
-                check("/extract", False, f"HTTP {code}: {body[:180]}")
-            else:
-                d = json.loads(body).get("diagnostics", {})
-                det = d.get("lines_detected") or 0
-                ren = d.get("lines_rendered") or 0
-                lost = det - ren
-                check("/extract returns diagnostics", det > 0, f"in {secs}s")
-                # Some loss is correct: the ink guard drops handwriting and specks
-                # that the model would otherwise invent text for. A large fraction
-                # means printed content is going missing with nothing to signal it.
-                check(f"lines kept {ren}/{det}", bool(det) and lost / det <= 0.25,
-                      f"{lost} dropped ({100*lost/max(det,1):.0f}%)",
-                      fail_detail="the ink guard should drop only handwriting and "
-                                  "specks. this much loss means printed text is "
-                                  "going missing with nothing to signal it",
-                      warn_only=True)
-                print(f"  {DIM}skew {d.get('skew_deg')}deg   "
-                      f"alignment median {d.get('alignment_median_pct')}%   "
-                      f"page {d.get('image_size')}{OFF}")
-
-    # ── 5. the endpoint DMS will actually call ───────────────────────────────
-    section("5. /process/text -- the endpoint DMS calls")
+    # ── 4. the endpoint DMS will actually call ───────────────────────────────
+    section("4. /process/text -- the endpoint DMS calls")
     if os.path.exists(args.doc):
-        print(f"  {DIM}another full page, around 80s. this is the timing that "
-              f"matters.{OFF}")
+        # No fixed estimate: cost scales with how many lines the page has, and
+        # each is a separate model call. A dense A4 scan is minutes, not seconds.
+        print(f"  {DIM}pushing a real page through the model. every detected line is"
+              f" a separate call, so a dense scan takes MINUTES on a small card —"
+              f" test_doc2.pdf has 49 of them. leave it be.{OFF}")
         text, secs, code = post_file(f"{base}/process/text", "file", args.doc)
         if code:
             check("/process/text", False, f"HTTP {code}: {text[:200]}")
@@ -317,6 +268,75 @@ def main():
             if not args.cold and secs < 10:
                 print(f"  {YELL}that was a cache hit, not real work. re-run with "
                       f"--cold for the throughput number.{OFF}")
+
+    # ── 5. detection diagnostics, now nearly free from the cache ─────────────
+    # /extract saves every upload as input.jpg, so it cannot read a PDF. Render
+    # page 1 first. This is also how DMS should feed it if it ever wants positions.
+    section("5. detection diagnostics (crops already cached)")
+    if not os.path.exists(args.doc):
+        check("test document present", False, args.doc)
+    else:
+        png = args.doc
+        if args.doc.lower().endswith(".pdf"):
+            # A temp dir, NOT the engine's work_dir. Those paths now come from
+            # /health, so with --url they describe the ENGINE's filesystem, which
+            # this script may not share or be able to write to. Rendering there
+            # worked only by accident when both ran on the same box.
+            import tempfile
+            png = os.path.join(tempfile.gettempdir(), "verify_page1.png")
+            try:
+                import fitz
+                d = fitz.open(args.doc)
+                page = d[0]
+                # MIRROR aligned_pipeline.load_page EXACTLY, or the cache-reuse this
+                # section depends on does not happen. load_page prefers the PDF's
+                # EMBEDDED scan at its native resolution and only renders when there
+                # is none. Rendering at some other dpi produces different pixels,
+                # therefore different crops, therefore different cache keys -- and
+                # this step would silently pay the full model cost a second time.
+                imgs = page.get_images(full=True)
+                if imgs:
+                    info = d.extract_image(imgs[0][0])
+                    tmp = os.path.join(tempfile.gettempdir(),
+                                       "verify_page1." + (info.get("ext") or "png"))
+                    with open(tmp, "wb") as f:
+                        f.write(info["image"])
+                    png = tmp
+                else:
+                    page.get_pixmap(dpi=300).save(png)   # load_page's own fallback
+                d.close()
+            except Exception as e:
+                check("render page 1 for the diagnostics", False,
+                      f"{type(e).__name__}: {e}")
+                png = None
+        if png:
+            # Cheap now: the step above already recognised every crop on this
+            # page, and the cache is keyed by crop content, so this re-reads them
+            # rather than paying the model again. It still builds a DOCX, which is
+            # CPU-only and a few seconds.
+            print(f"  {DIM}reusing the cached crops from the step above — seconds,"
+                  f" not minutes.{OFF}")
+            body, secs, code = post_file(f"{base}/extract", "image", png)
+            if code:
+                check("/extract", False, f"HTTP {code}: {body[:180]}")
+            else:
+                d = json.loads(body).get("diagnostics", {})
+                det = d.get("lines_detected") or 0
+                ren = d.get("lines_rendered") or 0
+                lost = det - ren
+                check("/extract returns diagnostics", det > 0, f"in {secs}s")
+                # Some loss is correct: the ink guard drops handwriting and specks
+                # that the model would otherwise invent text for. A large fraction
+                # means printed content is going missing with nothing to signal it.
+                check(f"lines kept {ren}/{det}", bool(det) and lost / det <= 0.25,
+                      f"{lost} dropped ({100*lost/max(det,1):.0f}%)",
+                      fail_detail="the ink guard should drop only handwriting and "
+                                  "specks. this much loss means printed text is "
+                                  "going missing with nothing to signal it",
+                      warn_only=True)
+                print(f"  {DIM}skew {d.get('skew_deg')}deg   "
+                      f"alignment median {d.get('alignment_median_pct')}%   "
+                      f"page {d.get('image_size')}{OFF}")
 
     # ── 6. placement again, now that a real request has run ──────────────────
     section("6. model placement after real work")
