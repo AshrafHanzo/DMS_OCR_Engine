@@ -214,20 +214,29 @@ elif [ -d "$DIR/.git" ]; then
   # A local edit or a diverged branch makes --ff-only fail, and under set -e that ends
   # the run with git's message and no context. Say what it means and carry on with the
   # code already there: a re-run is usually about re-checking the machine, not the code.
-  if git -C "$DIR" pull --ff-only -q 2>/dev/null; then
+  # As the OWNING USER, not root. sudo runs this as root, whose ~/.ssh has no deploy
+  # key, so the pull cannot authenticate -- and worse, it stopped to ask about GitHub's
+  # host key, an interactive prompt in a script meant to run unattended. BatchMode
+  # guarantees it fails instead of ever asking again.
+  if sudo -u "$RUN_USER" env GIT_SSH_COMMAND="ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new"        GIT_TERMINAL_PROMPT=0 git -C "$DIR" pull --ff-only -q 2>/dev/null; then
     ok "updated existing checkout"
   else
-    warn "could not fast-forward $DIR (local changes, or a diverged branch).
-        Continuing with the code already there. Resolve it with:
+    warn "could not fast-forward $DIR -- no credentials for the remote, a local change,
+        or a diverged branch. Continuing with the code already there, which is normally
+        what you want: pull it yourself first, as the user that owns the checkout.
             git -C $DIR status"
   fi
 else
   mkdir -p "$(dirname "$DIR")"
-  git clone -q "$REPO" "$DIR" 2>/dev/null && ok "cloned" || die "could not clone $REPO.
+  if sudo -u "$RUN_USER" env GIT_SSH_COMMAND="ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new"        GIT_TERMINAL_PROMPT=0 git clone -q "$REPO" "$DIR" 2>/dev/null; then
+    ok "cloned"
+  else
+    die "could not clone $REPO.
 
   That repository is PRIVATE, and stays private because it contains client documents.
   If you were sent a .tar.gz, install from it instead:
       sudo ./install.sh --dms-server <IP> --source /path/to/bundle.tar.gz"
+  fi
 fi
 chown -R "$RUN_USER":"$RUN_USER" "$DIR"
 
