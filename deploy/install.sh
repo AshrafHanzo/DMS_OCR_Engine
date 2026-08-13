@@ -84,9 +84,13 @@ case "${ID:-}:${VERSION_ID:-}" in
   *) warn "$PRETTY_NAME is untested; built and verified on Ubuntu 24.04" ;;
 esac
 
-[ "$(uname -m)" = x86_64 ] || die "$(uname -m) is not supported. The engine needs
-  x86_64: Ollama ships no arm64 build of this model, and an ARM board (a Jetson, say)
-  cannot run it even under emulation at a useful speed."
+[ "$(uname -m)" = x86_64 ] || die "$(uname -m) is not supported.
+
+  Everything here was built and verified on x86_64 only. Nothing in this stack has been
+  tested on aarch64, and an NVIDIA Jetson in particular ships an older JetPack CUDA
+  stack with GPU memory shared with the system -- which is why the engine was moved off
+  one. Whether it COULD work on ARM is untested, not established either way. Ask before
+  attempting it rather than treating this refusal as proof it is impossible."
 
 command -v python3 >/dev/null || die "python3 not found"
 PYV=$(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])')

@@ -32,20 +32,30 @@ We have not measured an 8 GB card ourselves, so we will not quote a figure we ca
 stand behind. What we can say is that the CPU portion is where nearly all of those 189
 seconds go.
 
-**ARM will not work** — including NVIDIA Jetson boards. The model has no ARM build.
+**x86 only.** Everything here was built and verified on x86_64; aarch64 is
+untested, and the installer refuses it rather than half-working. That includes
+NVIDIA Jetson boards, whose JetPack CUDA stack and shared GPU memory are why the
+engine was moved off one. If ARM is your only option, ask us — it has not been
+attempted, which is not the same as impossible.
 
 ## 2. Install
 
-We will send you a file called `dms-ocr-engine-<version>.tar.gz`.
+Four lines, run on the server itself. We will send you the exact command with the two
+placeholders filled in.
 
 ```bash
-tar -xzf dms-ocr-engine-*.tar.gz
+curl -fL -o dms-ocr-engine.tar.gz <INSTALLER_URL>
+tar -xzf dms-ocr-engine.tar.gz
 cd dms-ocr-engine-*/deploy
 sudo ./install.sh --dms-server <DMS_SERVER_IP> --source ..
 ```
 
-Ask us for `<DMS_SERVER_IP>`. It is the address of the DMS application server, and it
-becomes the **only** machine allowed to reach your engine.
+`<INSTALLER_URL>` is a link on the DMS portal, so nothing needs emailing or copying
+between machines — the server fetches it directly. The download is about 64 KB and
+contains only the engine's own source; there is nothing confidential in it.
+
+`<DMS_SERVER_IP>` is the address of the DMS application server. It becomes the **only**
+machine allowed to reach your engine, because the engine has no password of its own.
 
 That is the whole installation. The script checks the machine first and stops with a
 plain explanation if something is missing, installs everything, tunes itself to the GPU
