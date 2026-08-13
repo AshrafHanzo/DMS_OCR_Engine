@@ -24,7 +24,7 @@ Why each of these, because none of them is optional and all of them fail late:
 |---|---|
 | `tesseract-ocr` + `-eng` + `-kan` | `/health` reports `tesseract: false`; the legacy engine and the searchable-PDF download break. `ocrmypdf` is called with `language=["kan","eng"]`, so the Kannada pack is required, not optional |
 | `ghostscript` | `/health` reports `ghostscript: false`; searchable PDFs cannot be built |
-| `fonts-lohit-knda` / `fonts-noto-core` | **The cruel one.** Recognition succeeds, then rendering raises `no Kannada-capable font found` — so the page has already cost its full ~80 seconds before failing |
+| `fonts-lohit-knda` / `fonts-noto-core` | **The cruel one.** Recognition succeeds, then rendering raises `no Kannada-capable font found` — so the page has already paid its full recognition cost before failing |
 
 ## 2. Python dependencies
 
@@ -154,8 +154,8 @@ diverts every tenant pinned to it on their next page without unpicking assignmen
 |---|---|
 | `ModuleNotFoundError: docx_generator` | Started from the repo root. `WorkingDirectory` must be `ocr/` — `main.py` imports its siblings flat |
 | `RuntimeError: Form data requires "python-multipart"` | Dependencies not reinstalled after the requirements fix |
-| `no Kannada-capable font found`, after a long pause | Font packages missing. `/health` shows `font_file: null` and would have told you before you spent the 80 seconds |
+| `no Kannada-capable font found`, after a long pause | Font packages missing. `/health` shows `font_file: null`, and would have told you before you spent the recognition time |
 | Every page returns empty text | Ollama down. `/health` shows `ollama_up: false` |
 | A page returns in ~1.6s | Cache hit, not real work. Run `verify_deploy.py --cold` |
-| Pages fail after ~300s | The Operator backend's timeout. One page at ~80s is fine; a slow multi-page batch is not |
+| Pages fail after ~300s in DMS | **The real risk on this hardware.** The Operator backend posts with `timeout=300`, chosen when v2 answered in seconds. At ~5.5s per detected line a 55-line page reaches 300s, so dense scans can time out in DMS while succeeding here. Measure a representative page before cutting a tenant over; if it lands near 300s the timeout has to become per-engine |
 | Disk filling | `OCR_WORK_DIR` / `OCR_CACHE_DIR` not set, so both are inside the repo on `/` |
