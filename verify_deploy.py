@@ -106,6 +106,63 @@ def post_file(url, field, path, timeout=900):
         return e.read().decode("utf-8", "replace"), round(time.time() - t0, 1), e.code
 
 
+def make_selftest_page(font_file, out_path):
+    """Render a test page instead of shipping one.
+
+    The document this script used by default, ocr/test_doc2.pdf, is a REAL client
+    document -- a Karnataka government letter. It cannot go into a bundle handed to
+    another customer, and the repository holding it cannot be made public for the same
+    reason. So when it is absent, a page is drawn here using the Kannada font the engine
+    itself reported, which also proves that font renders the script correctly.
+
+    A rendered page is an EASIER test than a scan: no skew, no noise, no faint strokes.
+    It proves the pipeline works end to end and that Kannada is recognised at all. It
+    does not measure accuracy on real documents, and the output says so rather than
+    letting a green result imply more than it should.
+    """
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+    except Exception as e:
+        return None, f"Pillow unavailable: {e}"
+    if not font_file or not os.path.exists(font_file):
+        return None, "no Kannada font on this host, so a Kannada test cannot be drawn"
+
+    lines = [
+        ("ಕರ್ನಾಟಕ ಸರ್ಕಾರ", 54),      # Government of Karnataka
+        ("GOVERNMENT OF KARNATAKA", 44),
+        ("ದಾಖಲೆ ನಿರ್ವಹಣಾ ವ್ಯವಸ್ಥೆ", 40),  # Document Management System
+        ("", 20),
+        ("ಸಂಖ್ಯೆ: DMS/OCR/2026/0113", 36),                    # Number:
+        ("ದಿನಾಂಕ: 13/08/2026", 36),                          # Date:
+        ("", 20),
+        ("Item                     Qty        Rate       Amount", 36),
+        ("Scanning                 250       12.00      3000.00", 36),
+        ("Recognition              250        8.50      2125.00", 36),
+        ("Archival                   1     4500.00      4500.00", 36),
+        ("Total                                         9625.00", 36),
+        ("", 20),
+        ("ಸಹಿ: ವ್ಯವಸ್ಥಾಪಕ ನಿರ್ದೇಶಕರು", 38),  # Sd/- Managing Director
+        ("Email: dms@example.gov.in   Ph: 080-25710501", 34),
+    ]
+    img = Image.new("RGB", (1654, 2339), "white")
+    d = ImageDraw.Draw(img)
+    y = 150
+    for text, size in lines:
+        if text:
+            try:
+                f = ImageFont.truetype(font_file, size)
+            except Exception as e:
+                return None, f"cannot load {font_file}: {e}"
+            d.text((130, y), text, fill=(15, 15, 15), font=f)
+        y += size + 26
+    d.line([(120, 128), (1534, 128)], fill=(15, 15, 15), width=3)
+    try:
+        img.save(out_path, dpi=(200, 200))
+    except Exception as e:
+        return None, f"cannot write {out_path}: {e}"
+    return out_path, None
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--url", default="http://localhost:8080")
@@ -273,8 +330,25 @@ def main():
     # /extract saves every upload as input.jpg, so it cannot read a PDF. Render
     # page 1 first. This is also how DMS should feed it if it ever wants positions.
     section("5. detection diagnostics (crops already cached)")
+    generated = False
     if not os.path.exists(args.doc):
-        check("test document present", False, args.doc)
+        # Absent in any bundle that excludes client documents, which is every bundle
+        # given to a customer.
+        import tempfile
+        made, why = make_selftest_page(
+            h.get("font_file"),
+            os.path.join(tempfile.gettempdir(), "dms_ocr_selftest.png"))
+        if made:
+            args.doc, generated = made, True
+            print(f"  {DIM}{os.path.basename(args.doc)} not present, so a Kannada test "
+                  f"page was drawn with the engine's own font.{OFF}")
+            print(f"  {YELL}a rendered page is an EASIER test than a scan -- it proves "
+                  f"the pipeline and the font, not accuracy on real documents.{OFF}")
+        else:
+            check("a test document is available", False, why,
+                  fail_detail=f"pass --doc /path/to/a/scan")
+    if not os.path.exists(args.doc):
+        pass
     else:
         png = args.doc
         if args.doc.lower().endswith(".pdf"):

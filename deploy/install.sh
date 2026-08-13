@@ -28,6 +28,10 @@
 #   --user NAME       account to run as           (default the invoking sudo user)
 #   --no-firewall     skip ufw. Only if something else already restricts the port.
 #   --skip-model      do not pull the model (for an air-gapped box you will load later)
+#   --source PATH     install from an unpacked bundle or tarball instead of cloning.
+#                     Use this when you were sent a .tar.gz: the engine repository is
+#                     private and holds client documents, so it is not clonable and must
+#                     not be made public. From inside an unpacked bundle: --source ..
 
 set -euo pipefail
 
@@ -38,6 +42,7 @@ RUN_USER="${SUDO_USER:-$(id -un)}"
 DMS_SERVER=""
 DO_FIREWALL=1
 PULL_MODEL=1
+SOURCE=""
 REPO="https://github.com/AshrafHanzo/DMS_OCR_Engine.git"
 MODEL="AuditAid/PaddleOCR-VL-1.6-0.9B"
 
@@ -50,6 +55,7 @@ while [ $# -gt 0 ]; do
     --dms-server) DMS_SERVER="$2"; shift 2 ;;
     --no-firewall) DO_FIREWALL=0; shift ;;
     --skip-model) PULL_MODEL=0; shift ;;
+    --source) SOURCE="$2"; shift 2 ;;
     --repo) REPO="$2"; shift 2 ;;
     # Print the USAGE block only, matched by content rather than by line number: a
     # hard-coded range drifts every time the header above it is edited, and the last
@@ -160,11 +166,36 @@ ok "tesseract $(tesseract --version 2>&1 | head -1 | awk '{print $2}'), ghostscr
 
 # ── 3. the code ──────────────────────────────────────────────────────────────
 say "3. engine code -> $DIR"
-if [ -d "$DIR/.git" ]; then
+if [ -n "$SOURCE" ]; then
+  # From a bundle. This is the normal path for a customer: the repository is private
+  # and contains client documents, so it is neither clonable nor safe to publish.
+  mkdir -p "$DIR"
+  if [ -f "$SOURCE" ]; then
+    case "$SOURCE" in
+      *.tar.gz|*.tgz) tar -xzf "$SOURCE" -C "$DIR" --strip-components=1 ;;
+      *) die "--source must be a directory or a .tar.gz" ;;
+    esac
+    ok "unpacked $(basename "$SOURCE")"
+  elif [ -d "$SOURCE" ]; then
+    # -a to keep the executable bit on install.sh; trailing /. so the CONTENTS are
+    # copied rather than the directory itself nesting one level deeper.
+    cp -a "$SOURCE/." "$DIR/"
+    ok "copied from $SOURCE"
+  else
+    die "--source not found: $SOURCE"
+  fi
+  [ -f "$DIR/requirements.txt" ] && [ -f "$DIR/ocr/main.py" ] ||
+    die "that does not look like an engine bundle: requirements.txt and ocr/main.py
+  are both expected at the top level of $DIR"
+elif [ -d "$DIR/.git" ]; then
   git -C "$DIR" pull --ff-only -q && ok "updated existing checkout"
 else
   mkdir -p "$(dirname "$DIR")"
-  git clone -q "$REPO" "$DIR" && ok "cloned"
+  git clone -q "$REPO" "$DIR" 2>/dev/null && ok "cloned" || die "could not clone $REPO.
+
+  That repository is PRIVATE, and stays private because it contains client documents.
+  If you were sent a .tar.gz, install from it instead:
+      sudo ./install.sh --dms-server <IP> --source /path/to/bundle.tar.gz"
 fi
 chown -R "$RUN_USER":"$RUN_USER" "$DIR"
 

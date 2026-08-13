@@ -36,14 +36,16 @@ seconds go.
 
 ## 2. Install
 
+We will send you a file called `dms-ocr-engine-<version>.tar.gz`.
+
 ```bash
-git clone https://github.com/AshrafHanzo/DMS_OCR_Engine.git /tmp/dms-ocr-installer
-cd /tmp/dms-ocr-installer/deploy
-sudo ./install.sh --dms-server <DMS_SERVER_IP>
+tar -xzf dms-ocr-engine-*.tar.gz
+cd dms-ocr-engine-*/deploy
+sudo ./install.sh --dms-server <DMS_SERVER_IP> --source ..
 ```
 
 Ask us for `<DMS_SERVER_IP>`. It is the address of the DMS application server, and it
-becomes the **only** machine allowed to reach the engine.
+becomes the **only** machine allowed to reach your engine.
 
 That is the whole installation. The script checks the machine first and stops with a
 plain explanation if something is missing, installs everything, tunes itself to the GPU
@@ -53,8 +55,8 @@ a real document through to prove it works.
 Useful options:
 
 ```bash
-sudo ./install.sh --dms-server 1.2.3.4 --data /mnt/bigdisk   # put the workspace here
-sudo ./install.sh --dms-server 1.2.3.4 --port 9000           # if 8080 is taken
+sudo ./install.sh --dms-server <IP> --source .. --data /mnt/bigdisk   # workspace here
+sudo ./install.sh --dms-server <IP> --source .. --port 9000           # if 8080 is taken
 sudo ./install.sh --help
 ```
 
