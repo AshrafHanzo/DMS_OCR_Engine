@@ -453,6 +453,64 @@ async def extract_text(image: UploadFile = File(...), engine: str = Form("aligne
         raise HTTPException(500, str(e))
 
 
+@app.post("/process/text", response_class=PlainTextResponse)
+async def process_text_v2_compatible(file: UploadFile = File(...)):
+    """Drop-in replacement for v2's /process/text, so DMS needs only a new URL.
+
+    WHY THIS EXISTS
+
+    DMS calls the v2 engine like this, in two places:
+
+        requests.post(OCR_API_URL, files={'file': f})
+        text = response.json() if content_type is json else response.text
+        UPDATE document_pages SET extracted_text = <that>
+
+    v3's own /extract differs in three ways that each break it: the field is named
+    `image` rather than `file`, the reply is a JSON object rather than text, and the
+    URL path is different. Pointing DMS at /extract would store a serialised dict
+    in extracted_text — it would look like it worked and put rubbish in the column.
+
+    So this endpoint takes v2's field name, runs v3's aligned PaddleOCR-VL pipeline,
+    and returns bare text. Switching a tenant to this engine is then a URL change
+    and nothing else.
+
+    Returns PLAIN TEXT deliberately. DMS stores the body directly, and json() on a
+    dict would give it a Python repr rather than the extracted text.
+
+    /extract remains the richer endpoint — positions, preview, DOCX, diagnostics —
+    for anything that wants more than a string.
+    """
+    job_id = uuid.uuid4().hex[:12]
+    job_dir = os.path.join(WORK_DIR, job_id)
+    os.makedirs(job_dir, exist_ok=True)
+
+    ext = os.path.splitext(file.filename or "upload")[1] or ".jpg"
+    input_path = os.path.join(job_dir, f"input{ext}")
+    contents = await file.read()
+    if not contents:
+        raise HTTPException(400, "empty upload")
+    with open(input_path, "wb") as f:
+        f.write(contents)
+
+    try:
+        from aligned_pipeline import process_page
+        # want_docx=False: DMS only reads the text here, and building the DOCX adds
+        # seconds per page for something this caller never fetches.
+        r = await run_in_threadpool(process_page, input_path, job_dir,
+                                    want_docx=False)
+        return PlainTextResponse(content=r["extracted_text"] or "")
+    except Exception as e:
+        # traceback.print_exc() to match what /extract does — this module has no
+        # logger and uses print for diagnostics; uvicorn captures stdout.
+        import traceback
+        print(f"v2-compatible OCR failed for job {job_id}:")
+        traceback.print_exc()
+        # A non-200 rather than a 200 with empty text: DMS treats any non-200 as a
+        # failure and leaves ocr_status alone, whereas 200 with "" would silently
+        # mark the page Completed with nothing in it.
+        raise HTTPException(500, f"OCR processing failed: {e}")
+
+
 @app.get("/aligned/{job_id}")
 async def download_aligned_docx(job_id: str):
     """The layout-faithful .docx produced by the aligned pipeline."""
