@@ -85,6 +85,27 @@ Send that to us. We add it in the DMS admin portal and assign your organisation 
 **Until we do that, nothing changes** — your documents keep being processed exactly as
 they are today. You can install this and take your time.
 
+### One thing the installer cannot do for you
+
+It configures the server's own firewall (`ufw`), and that is all it can reach. If the
+machine sits behind anything else, that has to be opened too or the DMS server will never
+get through:
+
+| Where it runs | What else to open |
+|---|---|
+| AWS / Azure / GCP | the security group or network security group: inbound TCP 8080 from the DMS server's IP only |
+| Behind a NAT router | a port-forward for TCP 8080 to this machine, restricted to that source IP if the router allows it |
+| Corporate network | an inbound firewall rule from that one IP |
+
+Restrict it to the DMS server's IP wherever you can. **The engine has no password of its
+own** — anything that reaches the port can use your GPU and read back what it sends.
+
+Check it from outside once open, and tell us the result either way:
+
+```bash
+curl -s -m 10 http://<your-server-ip>:8080/health
+```
+
 ## 4. Afterwards
 
 ```bash
@@ -96,10 +117,14 @@ sudo ./install.sh --dms-server <IP>   # re-run to update or re-check
 To check it thoroughly at any time:
 
 ```bash
-/opt/dms-ocr/venv/bin/python /opt/dms-ocr/verify_deploy.py --cold
+sudo /opt/dms-ocr/venv/bin/python /opt/dms-ocr/verify_deploy.py --cold
 ```
 
-That reports every dependency separately, where the model is really running, whether
+Run it with `sudo`: to measure a true cost per page it restarts the engine, which
+clears the recognition cache the running process holds in memory. Without that the
+timing is a cache hit, and it will say so rather than report a figure.
+
+It reports every dependency separately, where the model is really running, whether
 the workspace is on the right disk, and the current cost per page. It exits non-zero if
 anything is genuinely wrong, so it is safe to run from a monitoring check.
 
@@ -134,7 +159,7 @@ pages are processed.
 Anything unexpected: send the output of
 
 ```bash
-/opt/dms-ocr/venv/bin/python /opt/dms-ocr/verify_deploy.py --cold
+sudo /opt/dms-ocr/venv/bin/python /opt/dms-ocr/verify_deploy.py --cold
 journalctl -u dms-ocr -n 50 --no-pager
 ```
 
