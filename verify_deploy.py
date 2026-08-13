@@ -28,6 +28,7 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import urllib.request
 
@@ -83,9 +84,16 @@ def get_json(url, timeout=10):
         return json.loads(r.read().decode())
 
 
-def post_file(url, field, path, timeout=900):
+def post_file(url, field, path, timeout=900, heartbeat=None):
     """Multipart POST with no third-party dependency, so this script runs even if
-    the venv is half-installed -- which is exactly when you need it most."""
+    the venv is half-installed -- which is exactly when you need it most.
+
+    Prints elapsed seconds while it waits. A page can take five minutes on a small card
+    -- longer than that after an Ollama restart, because the model reloads before any
+    recognition begins -- and five minutes of silence is indistinguishable from a hung
+    script. It got a run cancelled, and then a second one queried as stuck when it was
+    working correctly.
+    """
     boundary = "----verify" + os.urandom(8).hex()
     with open(path, "rb") as f:
         payload = f.read()
@@ -98,12 +106,42 @@ def post_file(url, field, path, timeout=900):
     ])
     req = urllib.request.Request(url, data=body, method="POST")
     req.add_header("Content-Type", f"multipart/form-data; boundary={boundary}")
+
     t0 = time.time()
+    done = threading.Event()
+
+    def tick():
+        # Deliberately on stderr: stdout is what a caller might parse, and this is
+        # progress for a human, not part of the report.
+        while not done.wait(15):
+            secs = int(time.time() - t0)
+            sys.stderr.write(f"\r  {DIM}  … still working, {secs}s elapsed "
+                             f"(a dense page is 200-300s on a small card){OFF}   ")
+            sys.stderr.flush()
+
+    # Only on a terminal. The ticks redraw a single line using a carriage return, which
+    # is live progress for a person watching and litter in a log file or a CI capture.
+    if heartbeat is None:
+        heartbeat = sys.stderr.isatty()
+    beat = None
+    if heartbeat:
+        beat = threading.Thread(target=tick, daemon=True)
+        beat.start()
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             return r.read().decode("utf-8", "replace"), round(time.time() - t0, 1), None
     except urllib.error.HTTPError as e:
         return e.read().decode("utf-8", "replace"), round(time.time() - t0, 1), e.code
+    except Exception as e:
+        # A timeout here is the answer, not a crash: the engine took longer than DMS
+        # itself would wait, which is exactly what the caller needs to know.
+        return "", round(time.time() - t0, 1), f"{type(e).__name__}: {e}"
+    finally:
+        done.set()
+        if beat:
+            beat.join(timeout=1)
+            sys.stderr.write("\r" + " " * 78 + "\r")
+            sys.stderr.flush()
 
 
 def make_selftest_page(font_file, out_path):
