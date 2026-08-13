@@ -26,6 +26,9 @@ from ocrmypdf.exceptions import ExitCode
 from PIL import Image, ImageOps
 import tempfile
 import os
+import shutil
+import threading
+import time
 import uuid
 import uvicorn
 import cv2
@@ -54,8 +57,68 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-WORK_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ocr_workspace")
+# Where per-job files land: the upload, its preprocessed copy, the preview, the
+# DOCX and any searchable PDF.
+#
+# Overridable because the default sits next to the code, which on a server means
+# the root filesystem, and this directory only grows. A box with a small root and a
+# large data disk wants OCR_WORK_DIR pointed at the data disk.
+WORK_DIR = os.environ.get("OCR_WORK_DIR") or os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "ocr_workspace")
 os.makedirs(WORK_DIR, exist_ok=True)
+
+# How long a finished job's files are kept. /download/{job_id} and /aligned/{job_id}
+# build or serve artefacts after the fact, so a job cannot be deleted the moment it
+# returns — a client fetching its DOCX a minute later would get a 404. A day is far
+# longer than any caller waits and still bounds the directory.
+WORK_TTL_HOURS = float(os.environ.get("OCR_WORK_TTL_HOURS", "24"))
+
+# Sweeping on a timer rather than per request: at volume, statting the whole
+# directory on every upload is itself the cost being avoided.
+_SWEEP_EVERY_SECONDS = 900
+_last_sweep = 0.0
+_sweep_lock = threading.Lock()
+
+
+def sweep_workspace(force: bool = False) -> int:
+    """Delete job directories older than the TTL. Returns how many went.
+
+    NOTHING previously removed them. Every request created a directory holding the
+    input image and its derivatives, and they accumulated for the life of the
+    server — a few megabytes per page, so a working day of real volume is
+    gigabytes and a fortnight fills a disk. This is the only thing standing between
+    the engine and running out of space.
+
+    Failures are swallowed per directory: a file held open by an in-flight request
+    must not stop the rest being cleaned, and a sweep must never break OCR.
+    """
+    global _last_sweep
+    now = time.time()
+    with _sweep_lock:
+        if not force and now - _last_sweep < _SWEEP_EVERY_SECONDS:
+            return 0
+        _last_sweep = now
+
+    cutoff = now - WORK_TTL_HOURS * 3600
+    removed = 0
+    try:
+        for name in os.listdir(WORK_DIR):
+            path = os.path.join(WORK_DIR, name)
+            if not os.path.isdir(path):
+                continue
+            try:
+                if os.path.getmtime(path) < cutoff:
+                    shutil.rmtree(path, ignore_errors=True)
+                    removed += 1
+            except OSError:
+                continue
+    except OSError as error:
+        print(f"workspace sweep could not list {WORK_DIR}: {error}")
+        return removed
+    if removed:
+        print(f"workspace sweep removed {removed} job directories older than "
+              f"{WORK_TTL_HOURS}h from {WORK_DIR}")
+    return removed
 
 
 def create_text_removed_preview(original_image_path: str, job_dir: str) -> str:
@@ -498,6 +561,10 @@ async def process_text_v2_compatible(file: UploadFile = File(...)):
         # seconds per page for something this caller never fetches.
         r = await run_in_threadpool(process_page, input_path, job_dir,
                                     want_docx=False)
+        # Rate-limited, so this is a no-op on all but roughly one call in a
+        # quarter-hour. Hooked here because this is the endpoint DMS drives at
+        # volume, and therefore the one that would fill the disk.
+        await run_in_threadpool(sweep_workspace)
         return PlainTextResponse(content=r["extracted_text"] or "")
     except Exception as e:
         # traceback.print_exc() to match what /extract does — this module has no
