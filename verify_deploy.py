@@ -194,8 +194,19 @@ def main():
 
     # ── 3. the workspace is bounded and not on the root disk ─────────────────
     section("3. storage")
-    work = os.environ.get("OCR_WORK_DIR") or os.path.join(HERE, "ocr", "ocr_workspace")
-    cache = os.environ.get("OCR_CACHE_DIR") or os.path.join(HERE, "ocr", "ocr_workspace")
+    # Take these from /health, which the ENGINE answers, not from this script's own
+    # environment. Run from an interactive shell the environment variables set in the
+    # systemd unit are not present here, so the previous version reported the
+    # in-repo defaults and warned about a root-disk problem that had been fixed at
+    # deploy time. The engine is the only process that knows where it writes.
+    engine_reported = bool(h.get("work_dir"))
+    work = h.get("work_dir") or os.environ.get("OCR_WORK_DIR") or os.path.join(
+        HERE, "ocr", "ocr_workspace")
+    cache = h.get("cache_dir") or os.environ.get("OCR_CACHE_DIR") or os.path.join(
+        HERE, "ocr", "ocr_workspace")
+    if not engine_reported:
+        print(f"  {YELL}this engine predates work_dir in /health, so these paths are "
+              f"this shell's guess, not the service's. git pull on the engine.{OFF}")
     for label, path in (("work dir", work), ("cache dir", cache)):
         exists = os.path.isdir(path)
         free = shutil.disk_usage(path).free / 1e9 if exists else 0
@@ -233,7 +244,12 @@ def main():
     else:
         png = args.doc
         if args.doc.lower().endswith(".pdf"):
-            png = os.path.join(work, "verify_page1.png")
+            # A temp dir, NOT the engine's work_dir. Those paths now come from
+            # /health, so with --url they describe the ENGINE's filesystem, which
+            # this script may not share or be able to write to. Rendering there
+            # worked only by accident when both ran on the same box.
+            import tempfile
+            png = os.path.join(tempfile.gettempdir(), "verify_page1.png")
             try:
                 import fitz
                 d = fitz.open(args.doc)
@@ -243,6 +259,12 @@ def main():
                 check("render page 1 for /extract", False, f"{type(e).__name__}: {e}")
                 png = None
         if png:
+            # Both this and section 5 run a full page through the model. On a small
+            # card that is over a minute each, with no output meanwhile -- which
+            # looks exactly like a hang, and got a previous run cancelled at this
+            # very line.
+            print(f"  {DIM}running a full page through the model — around 80s on a "
+                  f"P600, and it also builds a DOCX here. not stuck.{OFF}")
             body, secs, code = post_file(f"{base}/extract", "image", png)
             if code:
                 check("/extract", False, f"HTTP {code}: {body[:180]}")
@@ -268,6 +290,8 @@ def main():
     # ── 5. the endpoint DMS will actually call ───────────────────────────────
     section("5. /process/text -- the endpoint DMS calls")
     if os.path.exists(args.doc):
+        print(f"  {DIM}another full page, around 80s. this is the timing that "
+              f"matters.{OFF}")
         text, secs, code = post_file(f"{base}/process/text", "file", args.doc)
         if code:
             check("/process/text", False, f"HTTP {code}: {text[:200]}")
@@ -303,12 +327,19 @@ def main():
             pct = round(100 * vram / size) if size else 0
             check(f"{m.get('name')} on GPU: {pct}%", pct >= 99,
                   f"{vram/1e9:.2f}GB of {size/1e9:.2f}GB in VRAM", warn_only=True)
-            check("model stays resident between pages",
-                  str(m.get("expires_at", "")).startswith("9999")
-                  or m.get("expires_at") in (None, ""),
-                  str(m.get("expires_at", "")),
+            # OLLAMA_KEEP_ALIVE=-1 does not report a sentinel: Ollama returns a
+            # real timestamp centuries out (observed 2318-11-23). Matching on "9999"
+            # therefore reported a correctly configured server as misconfigured.
+            # Anything more than a year ahead means resident.
+            expires = str(m.get("expires_at", "") or "")
+            try:
+                resident = int(expires[:4]) > time.gmtime().tm_year + 1
+            except ValueError:
+                resident = not expires
+            check("model stays resident between pages", resident,
+                  expires[:19] or "no expiry reported",
                   fail_detail="set OLLAMA_KEEP_ALIVE=-1, or every page re-pays the "
-                              "model load",
+                              "model load -- most of a minute on this card",
                   warn_only=True)
     except Exception:
         pass

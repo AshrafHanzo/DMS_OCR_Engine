@@ -721,7 +721,8 @@ def health():
     import urllib.request
     import PIL
     from PIL import features
-    from aligned_pipeline import pick_font, OLLAMA, DEFAULT_MODEL
+    from aligned_pipeline import (pick_font, OLLAMA, DEFAULT_MODEL,
+                                  HERE_DIR as _HERE_DIR)
     try:
         urllib.request.urlopen(f"{OLLAMA}/api/tags", timeout=3)
         ollama_up = True
@@ -739,6 +740,19 @@ def health():
         "model": DEFAULT_MODEL,
         "tesseract": bool(shutil.which("tesseract")),
         "ghostscript": bool(shutil.which("gs")),
+        # WHERE THIS PROCESS IS ACTUALLY WRITING
+        #
+        # Both default to a directory inside the git working tree, which on a
+        # server puts per-page scratch files and an unbounded recognition
+        # cache on the root disk. The systemd unit overrides them, but a
+        # deploy check running in an interactive shell sees ITS OWN
+        # environment, not this process's -- so it reported the defaults and
+        # warned about a problem that had already been fixed. Reporting them
+        # here means the answer comes from the process that owns them.
+        "work_dir": WORK_DIR,
+        "cache_dir": (os.environ.get("OCR_CACHE_DIR")
+                      or os.path.join(_HERE_DIR, "ocr_workspace")),
+        "work_ttl_hours": WORK_TTL_HOURS,
     }
 
 
