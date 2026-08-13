@@ -140,9 +140,22 @@ AVAIL_GB=$(df -PBG "$(dirname "$DATA")" 2>/dev/null | tail -1 | awk '{gsub("G","
 ok "${AVAIL_GB} GB free for the workspace"
 
 if ss -lntH "sport = :$PORT" 2>/dev/null | grep -q .; then
-  die "port $PORT is already in use. Pass --port to choose another."
+  # Our own engine holding the port is the UPGRADE case, not a conflict -- and refusing
+  # it broke the idempotency this script promises: re-running on an installed machine
+  # stopped here every time. It gets restarted at step 8 regardless.
+  if systemctl is-active --quiet dms-ocr 2>/dev/null; then
+    ok "port $PORT held by the existing dms-ocr service (this is an upgrade)"
+  else
+    HOLDER=$(ss -lntpH "sport = :$PORT" 2>/dev/null |
+             grep -oE 'users:\(\("[^"]+"' | head -1 | sed 's/.*"\(.*\)"/\1/')
+    die "port $PORT is in use by ${HOLDER:-another process}, which is not dms-ocr.
+
+  Either stop it, or choose a different port with --port. Find it with:
+      sudo ss -lntp \"sport = :$PORT\""
+  fi
+else
+  ok "port $PORT is free"
 fi
-ok "port $PORT is free"
 
 if [ "$DO_FIREWALL" = 1 ] && [ -z "$DMS_SERVER" ]; then
   die "--dms-server is required.
@@ -181,10 +194,16 @@ if [ -n "$SOURCE" ]; then
     esac
     ok "unpacked $(basename "$SOURCE")"
   elif [ -d "$SOURCE" ]; then
-    # -a to keep the executable bit on install.sh; trailing /. so the CONTENTS are
-    # copied rather than the directory itself nesting one level deeper.
-    cp -a "$SOURCE/." "$DIR/"
-    ok "copied from $SOURCE"
+    # Copying a directory onto itself makes cp refuse with "are the same file" and, under
+    # set -e, aborts the whole install. Easy to hit: --source .. --dir <the same tree>.
+    if [ "$(cd "$SOURCE" && pwd -P)" = "$(cd "$DIR" && pwd -P)" ]; then
+      ok "source and install directory are the same; nothing to copy"
+    else
+      # -a to keep the executable bit on install.sh; trailing /. so the CONTENTS are
+      # copied rather than the directory nesting one level deeper.
+      cp -a "$SOURCE/." "$DIR/"
+      ok "copied from $SOURCE"
+    fi
   else
     die "--source not found: $SOURCE"
   fi
@@ -192,7 +211,16 @@ if [ -n "$SOURCE" ]; then
     die "that does not look like an engine bundle: requirements.txt and ocr/main.py
   are both expected at the top level of $DIR"
 elif [ -d "$DIR/.git" ]; then
-  git -C "$DIR" pull --ff-only -q && ok "updated existing checkout"
+  # A local edit or a diverged branch makes --ff-only fail, and under set -e that ends
+  # the run with git's message and no context. Say what it means and carry on with the
+  # code already there: a re-run is usually about re-checking the machine, not the code.
+  if git -C "$DIR" pull --ff-only -q 2>/dev/null; then
+    ok "updated existing checkout"
+  else
+    warn "could not fast-forward $DIR (local changes, or a diverged branch).
+        Continuing with the code already there. Resolve it with:
+            git -C $DIR status"
+  fi
 else
   mkdir -p "$(dirname "$DIR")"
   git clone -q "$REPO" "$DIR" 2>/dev/null && ok "cloned" || die "could not clone $REPO.
