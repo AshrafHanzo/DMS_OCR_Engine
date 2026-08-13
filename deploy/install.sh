@@ -370,8 +370,12 @@ fi
 # ── 10. verify ───────────────────────────────────────────────────────────────
 say "10. verifying (this runs a real page; minutes on a small card)"
 cd "$DIR"
+# --just-restarted: step 8 restarted the engine and nothing has been processed since, so
+# its in-memory recognition cache is empty. This run cannot establish that for itself --
+# it executes as the service user and so cannot restart the service -- and without the
+# assertion it would disclaim a measurement that is genuinely cold.
 if sudo -u "$RUN_USER" "$DIR/venv/bin/python" verify_deploy.py \
-     --url "http://localhost:$PORT" --cold; then
+     --url "http://localhost:$PORT" --cold --just-restarted; then
   IP=$(hostname -I 2>/dev/null | awk '{print $1}')
   cat <<EOF
 
@@ -386,10 +390,10 @@ your organisation to it. Nothing is routed here until they do.
 
   status   systemctl status dms-ocr
   logs     journalctl -u dms-ocr -f
-  recheck  $DIR/venv/bin/python $DIR/verify_deploy.py --cold
+  recheck  sudo systemctl restart dms-ocr && sleep 20 && \n           $DIR/venv/bin/python $DIR/verify_deploy.py --cold
 EOF
 else
   die "the engine is installed but verification failed. The output above says which
   check, and each one names what to do. Re-run:
-    $DIR/venv/bin/python $DIR/verify_deploy.py --cold"
+    sudo systemctl restart dms-ocr && sleep 20 && \n      $DIR/venv/bin/python $DIR/verify_deploy.py --cold"
 fi

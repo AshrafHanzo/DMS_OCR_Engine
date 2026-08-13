@@ -14,6 +14,11 @@ that only surfaces at render time, a workspace filling the root disk.
     --cold   clear the recognition cache first, so the timing is a true cold cost
              rather than a cache hit. Use this when you want the number that
              decides throughput.
+    --just-restarted
+             assert that the engine was restarted immediately before this ran, so its
+             in-memory cache is empty. Needed because --cold cannot restart the service
+             when running as the service's own user, and deleting the cache FILE does
+             not clear what a running process already holds.
     --wait   seconds to wait for the engine to answer, default 60. It is safe to
              run this immediately after "systemctl start dms-ocr": the engine
              imports cv2, fitz and ocrmypdf before uvicorn binds the port, which
@@ -144,6 +149,29 @@ def post_file(url, field, path, timeout=900, heartbeat=None):
             sys.stderr.flush()
 
 
+def _restart_engine():
+    """Restart dms-ocr so it drops its in-memory recognition cache.
+
+    Returns (ok, explanation). Tried without sudo first, then with sudo -n: this script
+    normally runs as the service's own user, which cannot restart it, and -n means a
+    missing sudo right fails immediately instead of blocking on a password prompt in
+    something meant to run unattended.
+    """
+    for cmd, label in ((["systemctl", "restart", "dms-ocr"], "systemctl"),
+                       (["sudo", "-n", "systemctl", "restart", "dms-ocr"], "sudo -n")):
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+            if r.returncode == 0:
+                return True, label
+            last = (r.stderr or r.stdout or "").strip().splitlines()
+        except FileNotFoundError:
+            last = ["systemctl not found -- is this a systemd host?"]
+        except Exception as error:
+            last = [f"{type(error).__name__}: {error}"]
+    return False, (last[-1] if last else "restart failed") + \
+        " (run this with sudo, or restart the service yourself first)"
+
+
 def make_selftest_page(font_file, out_path):
     """Render a test page instead of shipping one.
 
@@ -210,6 +238,13 @@ def main():
     # short enough that a genuinely dead service is reported promptly.
     ap.add_argument("--wait", type=int, default=60,
                     help="seconds to wait for the engine to answer (default 60)")
+    # For a caller that has ALREADY restarted the engine and knows nothing has been
+    # processed since -- install.sh restarts it two steps before calling this. Without
+    # it, that run would disclaim its own perfectly cold measurement, because this
+    # script runs as the service user and cannot restart the service itself.
+    ap.add_argument("--just-restarted", action="store_true",
+                    help="the engine was restarted just before this ran, so its "
+                         "in-memory cache is already empty")
     args = ap.parse_args()
     base = args.url.rstrip("/")
 
@@ -325,10 +360,43 @@ def main():
         except Exception:
             n = "?"
         print(f"  {DIM}recognition cache: {n} entries, {mb:.1f}MB{OFF}")
-        if args.cold:
+
+    really_cold = False
+    if args.cold:
+        # DELETING THE FILE IS NOT ENOUGH.
+        #
+        # aligned_pipeline loads the cache once per process and guards it with
+        # _CACHE_LOADED, so a running engine never re-reads the file. Removing it changes
+        # nothing for the process that is about to serve this request -- which made
+        # --cold report 8.5s and "10,165 pages/day" for a page that genuinely takes
+        # minutes. A verification tool inventing a number 50x too good is worse than no
+        # tool. The engine has to be restarted to forget.
+        if os.path.exists(cache_file):
             os.remove(cache_file)
-            print(f"  {YELL}--cold: removed the cache so the timing below is a "
-                  f"true cold cost{OFF}")
+        if args.just_restarted:
+            restarted, how = True, "caller restarted it"
+        else:
+            restarted, how = _restart_engine()
+        if restarted:
+            really_cold = True
+            print(f"  {YELL}--cold: cache removed and the engine restarted ({how}), "
+                  f"so it has forgotten what it had in memory{OFF}")
+            # It has to bind again before section 4 posts to it.
+            deadline2 = time.time() + args.wait
+            while time.time() < deadline2:
+                try:
+                    get_json(f"{base}/health", timeout=5)
+                    break
+                except Exception:
+                    time.sleep(2)
+        else:
+            print(f"  {RED}--cold could NOT make this measurement cold.{OFF} "
+                  f"{how}\n"
+                  f"  {YELL}The cache FILE was removed, but the running engine keeps it "
+                  f"in memory, so the time below is a cache hit and not a throughput "
+                  f"number. Restart the engine and re-run:{OFF}\n"
+                  f"      sudo systemctl restart dms-ocr && sleep 20 && "
+                  f"{sys.argv[0]} --cold")
 
     # ── 4. the endpoint DMS will actually call ───────────────────────────────
     section("4. /process/text -- the endpoint DMS calls")
@@ -356,13 +424,24 @@ def main():
             print(f"\n  {DIM}--- first 12 lines ---{OFF}")
             for ln in text.splitlines()[:12]:
                 print(f"  {DIM}| {ln[:96]}{OFF}")
-            print(f"\n  {'cold' if args.cold else 'possibly cached'} "
-                  f"time: {GREEN}{secs}s{OFF} per page"
+            # Only a run that restarted the engine may call itself cold, and only a cold
+            # run may be turned into a pages-per-day figure. A cache hit extrapolated to
+            # a day is a fabricated capacity, and somebody will plan against it.
+            label = "cold" if really_cold else (
+                "CACHE HIT (not cold)" if secs < 30 else "possibly cached")
+            print(f"\n  {label} time: {GREEN}{secs}s{OFF} per page"
                   + (f"   -> {3600/secs:.0f} pages/hour, ~{86400/secs:.0f}/day flat out"
-                     if secs > 0 else ""))
-            if not args.cold and secs < 10:
-                print(f"  {YELL}that was a cache hit, not real work. re-run with "
-                      f"--cold for the throughput number.{OFF}")
+                     if really_cold and secs > 0 else ""))
+            if not really_cold:
+                print(f"  {YELL}no throughput figure from this run{OFF} — the engine had "
+                      f"the page's crops cached. For a real number:\n"
+                      f"      sudo systemctl restart dms-ocr && sleep 20 && "
+                      f"./venv/bin/python verify_deploy.py --cold")
+            elif secs < 30:
+                # Cold, restarted, and still fast enough to be suspicious. Say so rather
+                # than reporting a flattering number without comment.
+                print(f"  {YELL}that is unexpectedly fast for a cold run. Check the page "
+                      f"really has as much text as you think.{OFF}")
 
     # ── 5. detection diagnostics, now nearly free from the cache ─────────────
     # /extract saves every upload as input.jpg, so it cannot read a PDF. Render
